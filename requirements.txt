@@ -1,0 +1,8 @@
+fastapi
+uvicorn
+pydantic
+pydantic-settings
+requests
+gspread
+google-auth
+openai
