@@ -8,14 +8,15 @@ services:
     ports:
       - "3000:3000"
     environment:
-      # Dashboard Login
-      - WAHA_DASHBOARD_USERNAME=admin
-      - WAHA_DASHBOARD_PASSWORD=admin
-      # Swagger Login
-      - WHATSAPP_SWAGGER_USERNAME=admin
-      - WHATSAPP_SWAGGER_PASSWORD=admin
-      # API Key for Python
-      - WAHA_API_KEY=vista-secure-key-2026
+      # Disable Dashboard Password completely
+      - WAHA_DASHBOARD_PASSWORD=
+      - WAHA_DASHBOARD_NO_PASSWORD=True
+      # Disable Swagger Password completely
+      - WHATSAPP_SWAGGER_PASSWORD=
+      - WHATSAPP_SWAGGER_NO_PASSWORD=True
+      # Disable API Key requirement completely
+      - WAHA_API_KEY=
+      - WAHA_NO_API_KEY=True
       # Webhook URL for Python
       - WHATSAPP_WEBHOOK_URL=http://host.docker.internal:5000/webhook
     volumes:
