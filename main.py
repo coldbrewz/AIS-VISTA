@@ -35,14 +35,12 @@ def process_message(message: dict):
             msg_datetime_str = dt.strftime('%Y-%m-%d %H:%M:%S')
         
         print("Step 1: Downloading photo via WAHA...")
-        send_whatsapp_message(sender_phone, "⏳ Sedang mengunduh foto dari WhatsApp...", session)
         
         try:
             img_bytes = download_whatsapp_media(message_id, session)
             
             # 2. Process with Gemini Vision FIRST so we get the date/sheet name
             print("Step 2: Extracting AI data...")
-            send_whatsapp_message(sender_phone, "🧠 AI sedang membaca data Marki...")
             payload, err = extract_sla_data(img_bytes, caption, msg_datetime_str)
             
             if payload:
@@ -63,12 +61,10 @@ def process_message(message: dict):
                 # 3. Upload to OneDrive dynamically
                 folder_path = f"VISTA_Photos/{payload.sheet_name}/{year_str}/{month_name}/{day_str}"
                 print(f"Step 3: Uploading to OneDrive at {folder_path}...")
-                send_whatsapp_message(sender_phone, f"☁️ Menyimpan foto ke folder: {payload.sheet_name}/{year_str}/{month_name}/{day_str}...")
-                photo_link = upload_photo_to_onedrive(img_bytes, f"{payload.kode}_{media_id}.jpg", folder_path)
+                photo_link = upload_photo_to_onedrive(img_bytes, f"{payload.kode}_{message_id}.jpg", folder_path)
                 
                 # 4. Update Excel
                 print(f"Step 4: Injecting into Excel (Kode: {payload.kode}, Sheet: {payload.sheet_name})...")
-                send_whatsapp_message(sender_phone, f"📊 Memasukkan data ke Excel sheet '{payload.sheet_name}' pada Kode '{payload.kode}'...")
                 update_excel_row(
                     share_url=settings.EXCEL_SHARE_LINK,
                     sheet_name=payload.sheet_name,
@@ -81,15 +77,15 @@ def process_message(message: dict):
                     tebal=str(payload.tebal) if payload.tebal else ""
                 )
                 print("✅ Success!")
-                send_whatsapp_message(sender_phone, f"✅ Update SLA berhasil!\nKode: {payload.kode}")
+                send_whatsapp_message(sender_phone, f"✅ Update SLA berhasil!\nKode: {payload.kode}", session)
             else:
-                print(f"⚠️ Failed to extract data: {err}")
-                send_whatsapp_message(sender_phone, f"⚠️ Gagal mengekstrak data: {err}")
+                print(f"⚠️ Ignored non-SLA image or failed to extract data: {err}")
+                # Silent Ninja Mode: No error message sent to the group
         except Exception as process_err:
             import traceback
             err_trace = traceback.format_exc()
-            send_whatsapp_message(sender_phone, f"❌ Terjadi Kesalahan Sistem: {str(process_err)}")
             print(f"Error processing image:\n{err_trace}")
+            # Silent Ninja Mode: No system error message sent to the group
 
 @app.get("/")
 def read_root():
