@@ -5,3 +5,4 @@ credentials.json
 token_cache.bin
 Data Source/
 legacy_meta_api/
+waha_sessions/
