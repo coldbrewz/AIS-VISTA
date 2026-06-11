@@ -1,4 +1,5 @@
 import requests
+from config import settings
 
 WAHA_URL = "http://localhost:3000"
 
@@ -17,8 +18,14 @@ def send_whatsapp_message(to_phone: str, message: str, session: str = "default")
         "session": session
     }
     
+    headers = {
+        "Accept": "application/json",
+        "Content-Type": "application/json",
+        "X-Api-Key": settings.WAHA_API_KEY
+    }
+    
     try:
-        response = requests.post(url, json=payload)
+        response = requests.post(url, json=payload, headers=headers)
         response.raise_for_status()
         return response.json()
     except requests.exceptions.RequestException as e:

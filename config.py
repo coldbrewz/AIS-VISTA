@@ -4,6 +4,8 @@ from typing import Optional
 class Settings(BaseSettings):
     GEMINI_API_KEY: Optional[str] = None
     
+    WAHA_API_KEY: str = ""
+    
     MICROSOFT_CLIENT_ID: str = ""
     MICROSOFT_CLIENT_SECRET: str = ""
     

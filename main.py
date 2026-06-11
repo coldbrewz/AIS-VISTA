@@ -10,7 +10,8 @@ app = FastAPI(title="Project VISTA Webhook API")
 
 def download_whatsapp_media(message_id: str, session: str = "default") -> bytes:
     url = f"http://localhost:3000/api/{session}/messages/{message_id}/download"
-    resp = requests.get(url)
+    headers = {"X-Api-Key": settings.WAHA_API_KEY}
+    resp = requests.get(url, headers=headers)
     resp.raise_for_status()
     return resp.content
 
