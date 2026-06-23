@@ -66,7 +66,7 @@ async def email_poller():
                             print("EMAIL POLLER: Received QR request via email reply!")
                             qr_resp = await asyncio.to_thread(
                                 requests.get,
-                                "http://localhost:3000/api/screenshot?session=default",
+                                f"{settings.WAHA_URL}/api/screenshot?session=default",
                                 headers=headers,
                                 timeout=15
                             )

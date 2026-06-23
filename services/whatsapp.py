@@ -3,7 +3,7 @@ from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 from config import settings
 
-WAHA_URL = "http://localhost:3000"
+# WAHA_URL is now dynamic via settings.WAHA_URL
 
 # Setup robust session for WAHA API calls to prevent silent message drops
 req_session = requests.Session()
@@ -14,7 +14,7 @@ def send_whatsapp_message(to_phone: str, message: str, session: str = "default")
     """
     Sends a text message using the local WAHA Docker container.
     """
-    url = f"{WAHA_URL}/api/sendText"
+    url = f"{settings.WAHA_URL}/api/sendText"
     
     # WAHA requires chat IDs to end in @c.us for regular contacts
     chat_id = to_phone if "@" in to_phone else f"{to_phone}@c.us"

@@ -5,6 +5,7 @@ class Settings(BaseSettings):
     GEMINI_API_KEY: Optional[str] = None
     
     WAHA_API_KEY: str = ""
+    WAHA_URL: str = "http://localhost:3000"
     
     ADMIN_PHONE: str = ""
     

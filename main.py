@@ -56,7 +56,7 @@ async def waha_watchdog():
             # Run requests.get in a separate thread to not block the async event loop
             resp = await asyncio.to_thread(
                 requests.get,
-                "http://localhost:3000/api/sessions?all=true",
+                f"{settings.WAHA_URL}/api/sessions?all=true",
                 headers=headers,
                 timeout=5
             )
@@ -72,7 +72,7 @@ async def waha_watchdog():
                             # Grab screenshot using WAHA API
                             qr_resp = await asyncio.to_thread(
                                 requests.get,
-                                "http://localhost:3000/api/screenshot?session=default",
+                                f"{settings.WAHA_URL}/api/screenshot?session=default",
                                 headers=headers,
                                 timeout=15
                             )
