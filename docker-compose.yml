@@ -1,0 +1,26 @@
+version: '3.8'
+
+services:
+  waha:
+    image: devlikeapro/waha
+    container_name: waha
+    restart: "no"
+    ports:
+      - "3000:3000"
+    environment:
+      # Disable Dashboard Password completely
+      - WAHA_DASHBOARD_PASSWORD=
+      - WAHA_DASHBOARD_NO_PASSWORD=True
+      # Disable Swagger Password completely
+      - WHATSAPP_SWAGGER_PASSWORD=
+      - WHATSAPP_SWAGGER_NO_PASSWORD=True
+      # Enable secure API Key using SHA-512 Hash
+      - WAHA_API_KEY=sha512:e9b172819cc90f08080f21bf06b428955faeb7074c0f598d8f506eca97a28d1ca82bef0d8f086f44820254df4d96623db107248b759f533b4baa27b2f433a1d3
+      # Webhook URL for Python
+      - WHATSAPP_HOOK_URL=http://host.docker.internal:5001/webhook
+      - WHATSAPP_HOOK_EVENTS=message
+      # Auto-start default session
+      - WHATSAPP_START_SESSION=default
+    volumes:
+      # Saves your WhatsApp login permanently so you don't have to scan the QR code again if PC restarts
+      - ./waha_sessions:/app/.sessions

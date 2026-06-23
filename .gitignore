@@ -1,0 +1,10 @@
+.env
+__pycache__/
+*.pyc
+credentials.json
+token_cache.bin
+Data Source/
+legacy_meta_api/
+waha_sessions/
+
+processed_messages.db

@@ -1,0 +1,35 @@
+version: '3.8'
+
+services:
+  waha:
+    image: devlikeapro/waha
+    container_name: waha
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    environment:
+      # Disable Passwords
+      - WAHA_DASHBOARD_NO_PASSWORD=True
+      - WHATSAPP_SWAGGER_NO_PASSWORD=True
+      # API Key
+      - WAHA_API_KEY=${WAHA_API_KEY}
+      # CRITICAL: In Docker, WAHA must use the container name "vista_bot" to reach the Python server, not "localhost"
+      - WHATSAPP_HOOK_URL=http://vista_bot:5001/webhook
+      - WHATSAPP_HOOK_EVENTS=message
+      - WHATSAPP_START_SESSION=default
+    volumes:
+      - ./waha_sessions:/app/.sessions
+    depends_on:
+      - vista_bot
+
+  vista_bot:
+    build: .
+    container_name: vista_bot
+    restart: unless-stopped
+    ports:
+      - "5001:5001"
+    volumes:
+      # Keep the database, env variables, and auth tokens synchronized and persistent
+      - ./processed_messages.db:/app/processed_messages.db
+      - ./.env:/app/.env
+      - ./token_cache.bin:/app/token_cache.bin
