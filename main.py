@@ -39,8 +39,12 @@ async def auto_update_waha():
 from services.email import send_qr_email, email_poller
 from services.telegram import send_telegram_alert, telegram_poller
 
-async def sync_offline_messages(session_name: str = "default"):
-    print(f"OFFLINE SYNC: Checking for missed messages in session '{session_name}'...")
+async def sync_offline_messages(session_name: str = "default", offline_since: float = None):
+    # If we don't know exactly when we went offline (e.g. computer restarted), default to 24 hours ago
+    if offline_since is None:
+        offline_since = datetime.datetime.now().timestamp() - (24 * 3600)
+
+    print(f"OFFLINE SYNC: Checking for missed messages in session '{session_name}' since {datetime.datetime.fromtimestamp(offline_since).strftime('%Y-%m-%d %H:%M:%S')}...")
     headers = {"X-Api-Key": settings.WAHA_API_KEY}
     try:
         chats_resp = await asyncio.to_thread(
@@ -75,6 +79,12 @@ async def sync_offline_messages(session_name: str = "default"):
                     messages = msgs_resp.json()
                     if isinstance(messages, list):
                         for msg in messages:
+                            msg_timestamp = msg.get("timestamp", 0)
+                            
+                            # Skip messages that arrived before we went offline
+                            if msg_timestamp < offline_since:
+                                continue
+                                
                             raw_id = msg.get("id")
                             msg_id = raw_id.get("_serialized") if isinstance(raw_id, dict) else raw_id
                             
@@ -107,6 +117,7 @@ async def waha_watchdog():
     global is_updating
     consecutive_failures = 0
     was_offline = True  # Start as True so we do an offline sync on the very first boot
+    offline_since = None
     qr_email_sent = False
     headers = {"X-Api-Key": settings.WAHA_API_KEY}
     
@@ -162,6 +173,8 @@ async def waha_watchdog():
                         pass
 
                 if status != "WORKING" or is_crashed:
+                    if not was_offline:
+                        offline_since = datetime.datetime.now().timestamp()
                     consecutive_failures += 1
                     was_offline = True
                     print(f"WATCHDOG: WAHA status={status}, crashed={is_crashed}. Failure count: {consecutive_failures}/3")
@@ -174,7 +187,8 @@ async def waha_watchdog():
                         session_name = data[0].get("name", "default")
                         
                         # Trigger offline sync to catch any messages missed during downtime or before boot
-                        asyncio.create_task(sync_offline_messages(session_name))
+                        asyncio.create_task(sync_offline_messages(session_name, offline_since))
+                        offline_since = None
                         
                         # Send an alert to the admin phone
                         admin_phone = settings.ADMIN_PHONE
