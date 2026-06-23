@@ -39,11 +39,74 @@ async def auto_update_waha():
 from services.email import send_qr_email, email_poller
 from services.telegram import send_telegram_alert, telegram_poller
 
+async def sync_offline_messages(session_name: str = "default"):
+    print(f"OFFLINE SYNC: Checking for missed messages in session '{session_name}'...")
+    headers = {"X-Api-Key": settings.WAHA_API_KEY}
+    try:
+        chats_resp = await asyncio.to_thread(
+            requests.get,
+            f"{settings.WAHA_URL}/api/{session_name}/chats",
+            headers=headers,
+            timeout=15
+        )
+        if chats_resp.status_code != 200:
+            return
+        chats = chats_resp.json()
+        if not isinstance(chats, list):
+            return
+            
+        for chat in chats:
+            unread_count = chat.get("unreadCount", 0)
+            if unread_count > 0:
+                chat_id = chat.get("id", {}).get("_serialized")
+                if not chat_id:
+                    chat_id = chat.get("id")
+                    if isinstance(chat_id, dict):
+                        continue
+                
+                print(f"OFFLINE SYNC: Found {unread_count} unread messages in chat {chat_id}. Fetching...")
+                msgs_resp = await asyncio.to_thread(
+                    requests.get,
+                    f"{settings.WAHA_URL}/api/{session_name}/chats/{chat_id}/messages?limit={unread_count}",
+                    headers=headers,
+                    timeout=15
+                )
+                if msgs_resp.status_code == 200:
+                    messages = msgs_resp.json()
+                    if isinstance(messages, list):
+                        for msg in messages:
+                            raw_id = msg.get("id")
+                            msg_id = raw_id.get("_serialized") if isinstance(raw_id, dict) else raw_id
+                            
+                            if not msg_id or is_processed(msg_id):
+                                continue
+                                
+                            payload = dict(msg)
+                            payload["id"] = msg_id
+                            payload["_session"] = session_name
+                            
+                            is_from_me = payload.get("fromMe", False) or (isinstance(raw_id, dict) and raw_id.get("fromMe", False))
+                            if not is_from_me:
+                                print(f"OFFLINE SYNC: Injecting missed message {msg_id} into processing queue...")
+                                await asyncio.to_thread(process_message, payload)
+                                
+                # Mark chat as seen to clear the unread badge
+                await asyncio.to_thread(
+                    requests.post,
+                    f"{settings.WAHA_URL}/api/sendSeen",
+                    headers=headers,
+                    json={"session": session_name, "chatId": chat_id},
+                    timeout=10
+                )
+    except Exception as e:
+        print(f"OFFLINE SYNC: Failed to sync messages: {e}")
+
+
 async def waha_watchdog():
     """Background task to monitor WAHA health and auto-restart if stuck."""
     global is_updating
     consecutive_failures = 0
-    was_offline = False
+    was_offline = True  # Start as True so we do an offline sync on the very first boot
     qr_email_sent = False
     headers = {"X-Api-Key": settings.WAHA_API_KEY}
     
@@ -105,8 +168,13 @@ async def waha_watchdog():
                 else:
                     consecutive_failures = 0
                     if was_offline:
-                        print("\n✅ WATCHDOG: WAHA has successfully recovered and is WORKING again!\n")
+                        print("\n✅ WATCHDOG: WAHA is online and WORKING!\n")
                         was_offline = False
+                        
+                        session_name = data[0].get("name", "default")
+                        
+                        # Trigger offline sync to catch any messages missed during downtime or before boot
+                        asyncio.create_task(sync_offline_messages(session_name))
                         
                         # Send an alert to the admin phone
                         admin_phone = settings.ADMIN_PHONE
