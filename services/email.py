@@ -71,9 +71,11 @@ async def email_poller():
                                 timeout=15
                             )
                             if qr_resp.status_code == 200:
+                                import utils
+                                cropped_qr = utils.crop_qr_code(qr_resp.content)
                                 await asyncio.to_thread(
                                     send_qr_email, 
-                                    qr_resp.content, 
+                                    cropped_qr, 
                                     "✅ Live WAHA QR Code Attached", 
                                     "Here is your fresh, live QR code. Please scan it immediately."
                                 )

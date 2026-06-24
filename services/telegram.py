@@ -42,13 +42,15 @@ async def telegram_poller():
                             timeout=15
                         )
                         if qr_resp.status_code == 200:
+                            import utils
+                            cropped_qr = utils.crop_qr_code(qr_resp.content)
                             # Send as document instead of photo to prevent Telegram from blurring/compressing the QR code
                             send_url = f"https://api.telegram.org/bot{settings.TELEGRAM_BOT_TOKEN}/sendDocument"
                             await asyncio.to_thread(
                                 requests.post,
                                 send_url,
                                 data={"chat_id": chat_id, "caption": "Live WAHA QR Code (Open the file to scan clearly!)"},
-                                files={"document": ("qr.png", qr_resp.content, "image/png")},
+                                files={"document": ("qr.png", cropped_qr, "image/png")},
                                 timeout=20
                             )
                         else:
