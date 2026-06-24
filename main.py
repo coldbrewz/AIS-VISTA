@@ -88,7 +88,7 @@ async def sync_offline_messages(session_name: str = "default", offline_since: fl
                             raw_id = msg.get("id")
                             msg_id = raw_id.get("_serialized") if isinstance(raw_id, dict) else raw_id
                             
-                            if not msg_id or is_processed(msg_id):
+                            if not msg_id:
                                 continue
                                 
                             payload = dict(msg)
@@ -250,20 +250,14 @@ def init_db():
 
 init_db()
 
-def is_processed(message_id: str) -> bool:
-    conn = sqlite3.connect("processed_messages.db")
-    c = conn.cursor()
-    c.execute("SELECT 1 FROM processed WHERE message_id = ?", (message_id,))
-    result = c.fetchone()
-    conn.close()
-    return result is not None
-
-def mark_processed(message_id: str):
+def mark_processed(message_id: str) -> bool:
     conn = sqlite3.connect("processed_messages.db")
     c = conn.cursor()
     c.execute("INSERT OR IGNORE INTO processed (message_id) VALUES (?)", (message_id,))
+    inserted = c.rowcount > 0
     conn.commit()
     conn.close()
+    return inserted
 
 def download_whatsapp_media(media_url: str) -> bytes:
     headers = {"X-Api-Key": settings.WAHA_API_KEY}
@@ -281,6 +275,12 @@ def process_message(message: dict):
     
     message_id = message["id"]
     
+    # ATOMIC RACE-CONDITION LOCK: Immediately insert into DB.
+    # If it's already there (rowcount == 0), another thread/webhook is already processing it!
+    if not mark_processed(message_id):
+        print(f"Skipping duplicate message {message_id}...")
+        return
+        
     if message.get("hasMedia"):
         caption = message.get("body", "")
         
@@ -290,16 +290,10 @@ def process_message(message: dict):
         if not kode_match:
             # If they clearly attempted to submit an SLA but failed the regex format
             if "kode" in caption.lower():
-                if not is_processed(message_id):
-                    send_whatsapp_message(sender_phone, "⚠️ *Update Ditolak*\nFormat Kode tidak valid atau tidak dikenali oleh sistem. Harap pastikan format kode SLA benar (contoh: *Kode: 240523PV001*).", session)
-                    mark_processed(message_id)
+                send_whatsapp_message(sender_phone, "⚠️ *Update Ditolak*\nFormat Kode tidak valid atau tidak dikenali oleh sistem. Harap pastikan format kode SLA benar (contoh: *Kode: 240523PV001*).", session)
             print(f"Skipping message {message_id}: Caption does not contain a valid SLA code format.")
             return
         detected_kode = kode_match.group(1)
-            
-        if is_processed(message_id):
-            print(f"Skipping message {message_id}: Already processed.")
-            return
         
         print(f"Message ID: {message_id} | Caption: {caption}")
         
@@ -355,35 +349,24 @@ def process_message(message: dict):
                     tebal=str(payload.tebal).replace(",", ".") if payload.tebal else ""
                 )
                 
-                # Mark as processed in DB
-                mark_processed(message_id)
-                
                 print("✅ Success!")
                 send_whatsapp_message(sender_phone, f"✅ Update SLA berhasil!\nKode: {payload.kode}", session)
             else:
                 print(f"⚠️ Ignored non-SLA image or failed to extract data: {err}")
-                if not is_processed(message_id):
-                    send_whatsapp_message(sender_phone, f"⚠️ Ekstraksi data gagal untuk Kode *{detected_kode}*: {err}\nPastikan format teks dan gambar sudah sesuai.", session)
-                    mark_processed(message_id)
+                send_whatsapp_message(sender_phone, f"⚠️ Ekstraksi data gagal untuk Kode *{detected_kode}*: {err}\nPastikan format teks dan gambar sudah sesuai.", session)
         except Exception as process_err:
             import traceback
             err_trace = traceback.format_exc()
             print(f"Error processing image:\n{err_trace}")
-            if not is_processed(message_id):
-                send_whatsapp_message(sender_phone, f"⚠️ Maaf, terjadi kendala teknis saat menyimpan data SLA untuk Kode *{detected_kode}*. Mohon coba kirim ulang beberapa saat lagi.", session)
-                mark_processed(message_id)
+            send_whatsapp_message(sender_phone, f"⚠️ Maaf, terjadi kendala teknis saat menyimpan data SLA untuk Kode *{detected_kode}*. Mohon coba kirim ulang beberapa saat lagi.", session)
     else:
         # No media attached
         body = message.get("body", "")
         kode_match = re.search(r"Kode\s*:\s*(\d{6}(?:PV|DR|FE|GR|SG|LC|RM|CA|WR)\d{3})", body, re.IGNORECASE)
         if kode_match:
-            if not is_processed(message_id):
-                send_whatsapp_message(sender_phone, f"⚠️ *Update Gagal untuk {kode_match.group(1)}*\nAnda mengirimkan teks tanpa foto. Harap kirimkan foto dokumentasi dengan caption kode tersebut.", session)
-                mark_processed(message_id)
+            send_whatsapp_message(sender_phone, f"⚠️ *Update Gagal untuk {kode_match.group(1)}*\nAnda mengirimkan teks tanpa foto. Harap kirimkan foto dokumentasi dengan caption kode tersebut.", session)
         elif "kode:" in body.lower() or "kode :" in body.lower():
-            if not is_processed(message_id):
-                send_whatsapp_message(sender_phone, "⚠️ *Update Gagal*\nHarap kirimkan *foto dokumentasi* beserta caption dengan format Kode yang benar (contoh: *Kode: 240523PV001*).", session)
-                mark_processed(message_id)
+            send_whatsapp_message(sender_phone, "⚠️ *Update Gagal*\nHarap kirimkan *foto dokumentasi* beserta caption dengan format Kode yang benar (contoh: *Kode: 240523PV001*).", session)
 
 @app.get("/")
 def read_root():
