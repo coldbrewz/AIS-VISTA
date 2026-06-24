@@ -1,4 +1,4 @@
-# 👁️ Project VISTA (Visual Intelligence SLA Tracker API)
+# 👁️ AIS VISTA (Visual Intelligence SLA Tracker API)
 
 VISTA is an AI-powered WhatsApp bot designed to automatically track, process, and log toll road maintenance reports for the Tangerang-Merak highway. It serves as the intelligent ingestion engine for the AIS-IRIS ecosystem.
 
@@ -8,7 +8,7 @@ Field workers simply send a photo of the repair along with a brief caption via W
 This project is designed for 24/7 uptime on a dedicated server using:
 - **WhatsApp Engine:** Docker WAHA (WhatsApp HTTP API) by devlikeapro.
 - **Backend Service:** Python 3 (FastAPI & Uvicorn) with intelligent watchdog.
-- **AI Vision:** Google Gemini 1.5 Pro/Flash.
+- **AI Vision:** Google Gemini 2.5 Flash.
 - **Data Storage:** Microsoft OneDrive & Excel Online.
 - **Notifications:** Telegram Bot API & SMTP Email.
 
