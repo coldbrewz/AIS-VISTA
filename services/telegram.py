@@ -37,29 +37,27 @@ async def telegram_poller():
                     authorized_ids = [cid.strip().strip('\"').strip('\'') for cid in str(settings.TELEGRAM_CHAT_ID).split(",") if cid.strip()]
                     if str(chat_id) in authorized_ids and "/qr" in text:
                         print("TELEGRAM POLLER: Received /qr request!")
-                        # Grab screenshot
+                        # Grab raw QR code image from WAHA
                         qr_resp = await asyncio.to_thread(
                             requests.get,
-                            f"{settings.WAHA_URL}/api/screenshot?session=default",
+                            f"{settings.WAHA_URL}/api/default/auth/qr",
                             headers=headers,
                             timeout=15
                         )
-                        if qr_resp.status_code == 200:
-                            import utils
-                            cropped_qr = utils.crop_qr_code(qr_resp.content)
+                        if qr_resp.status_code == 200 and 'image' in qr_resp.headers.get('Content-Type', ''):
                             # Send as Photo so it opens instantly without downloading a file (combats QR expiration)
                             send_url = f"https://api.telegram.org/bot{settings.TELEGRAM_BOT_TOKEN}/sendPhoto"
                             await asyncio.to_thread(
                                 requests.post,
                                 send_url,
                                 data={"chat_id": chat_id, "caption": "Live WAHA QR Code (Scan immediately!)"},
-                                files={"photo": ("qr.png", cropped_qr, "image/png")},
+                                files={"photo": ("qr.png", qr_resp.content, "image/png")},
                                 timeout=20
                             )
                         else:
-                            # send text error
+                            # send text error (might be already authenticated or WAHA is still booting)
                             err_url = f"https://api.telegram.org/bot{settings.TELEGRAM_BOT_TOKEN}/sendMessage"
-                            await asyncio.to_thread(requests.post, err_url, data={"chat_id": chat_id, "text": f"Failed to grab QR screenshot. HTTP {qr_resp.status_code}"}, timeout=10)
+                            await asyncio.to_thread(requests.post, err_url, data={"chat_id": chat_id, "text": f"Failed to grab QR. Either WAHA is still booting, or the bot is already logged in!"}, timeout=10)
         except requests.exceptions.ConnectionError:
             # Harmless network timeouts during long-polling
             pass
