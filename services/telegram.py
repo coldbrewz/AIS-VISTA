@@ -7,7 +7,9 @@ def send_telegram_alert(text: str):
         return
     try:
         url = f"https://api.telegram.org/bot{settings.TELEGRAM_BOT_TOKEN}/sendMessage"
-        requests.post(url, data={"chat_id": settings.TELEGRAM_CHAT_ID, "text": text}, timeout=10)
+        chat_ids = [cid.strip().strip('\"').strip('\'') for cid in str(settings.TELEGRAM_CHAT_ID).split(",") if cid.strip()]
+        for cid in chat_ids:
+            requests.post(url, data={"chat_id": cid, "text": text}, timeout=10)
     except Exception as e:
         print(f"Failed to send telegram alert: {e}")
 
@@ -32,7 +34,8 @@ async def telegram_poller():
                     text = str(msg.get("text", ""))
                     chat_id = msg.get("chat", {}).get("id")
                     
-                    if str(chat_id) == str(settings.TELEGRAM_CHAT_ID) and "/qr" in text:
+                    authorized_ids = [cid.strip().strip('\"').strip('\'') for cid in str(settings.TELEGRAM_CHAT_ID).split(",") if cid.strip()]
+                    if str(chat_id) in authorized_ids and "/qr" in text:
                         print("TELEGRAM POLLER: Received /qr request!")
                         # Grab screenshot
                         qr_resp = await asyncio.to_thread(
@@ -44,13 +47,13 @@ async def telegram_poller():
                         if qr_resp.status_code == 200:
                             import utils
                             cropped_qr = utils.crop_qr_code(qr_resp.content)
-                            # Send as document instead of photo to prevent Telegram from blurring/compressing the QR code
-                            send_url = f"https://api.telegram.org/bot{settings.TELEGRAM_BOT_TOKEN}/sendDocument"
+                            # Send as Photo so it opens instantly without downloading a file (combats QR expiration)
+                            send_url = f"https://api.telegram.org/bot{settings.TELEGRAM_BOT_TOKEN}/sendPhoto"
                             await asyncio.to_thread(
                                 requests.post,
                                 send_url,
-                                data={"chat_id": chat_id, "caption": "Live WAHA QR Code (Open the file to scan clearly!)"},
-                                files={"document": ("qr.png", cropped_qr, "image/png")},
+                                data={"chat_id": chat_id, "caption": "Live WAHA QR Code (Scan immediately!)"},
+                                files={"photo": ("qr.png", cropped_qr, "image/png")},
                                 timeout=20
                             )
                         else:
