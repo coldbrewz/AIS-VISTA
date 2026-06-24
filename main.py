@@ -141,23 +141,21 @@ async def waha_watchdog():
                 # Send QR code email if WAHA logs out
                 if status == "SCAN_QR_CODE":
                     if not qr_email_sent:
-                        print("WATCHDOG: WAHA is logged out. Grabbing screenshot and sending email...")
+                        print("WATCHDOG: WAHA is logged out. Grabbing native QR and sending email...")
                         try:
-                            # Grab screenshot using WAHA API
+                            # Grab raw QR code using WAHA API
                             qr_resp = await asyncio.to_thread(
                                 requests.get,
-                                f"{settings.WAHA_URL}/api/screenshot?session=default",
+                                f"{settings.WAHA_URL}/api/default/auth/qr",
                                 headers=headers,
                                 timeout=15
                             )
-                            if qr_resp.status_code == 200:
-                                import utils
-                                cropped_qr = utils.crop_qr_code(qr_resp.content)
-                                await asyncio.to_thread(send_qr_email, cropped_qr)
+                            if qr_resp.status_code == 200 and 'image' in qr_resp.headers.get('Content-Type', ''):
+                                await asyncio.to_thread(send_qr_email, qr_resp.content)
                                 await asyncio.to_thread(send_telegram_alert, "🚨 WAHA Bot Logged Out! When you are ready to scan the QR code, reply to this chat with /qr")
                                 qr_email_sent = True
                             else:
-                                print(f"WATCHDOG: Failed to grab screenshot. Status {qr_resp.status_code}")
+                                print(f"WATCHDOG: Failed to grab QR. Status {qr_resp.status_code}")
                         except Exception as e:
                             print(f"WATCHDOG: Error sending QR email: {e}")
                 elif status == "WORKING":
