@@ -96,4 +96,4 @@ docker compose -f docker-compose.prod.yml up -d --build
 5. **Excel Injection:** Microsoft Graph API pushes the newly formatted row straight into the live Excel spreadsheet.
 
 ---
-*Built for Astra Tol Nusantara | AIS-IRIS Ecosystem*
+*Built for Astra Infra Solutions*
