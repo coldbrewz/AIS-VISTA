@@ -27,6 +27,11 @@ class TailLogger:
             
     def flush(self):
         self.terminal.flush()
+        
+    def isatty(self):
+        if hasattr(self.terminal, 'isatty'):
+            return self.terminal.isatty()
+        return False
 
 sys.stdout = TailLogger("vista_bot.log")
 sys.stderr = sys.stdout
