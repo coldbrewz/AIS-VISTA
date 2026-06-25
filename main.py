@@ -363,21 +363,33 @@ def download_whatsapp_media(media_url: str) -> bytes:
 def handle_whatsapp_command(sender_phone, command, session):
     try:
         now = datetime.datetime.now()
+        months_id = ["Januari", "Februari", "Maret", "April", "Mei", "Juni", "Juli", "Agustus", "September", "Oktober", "November", "Desember"]
         
         if command in ["/rekap", "/rekap hari ini"]:
-            days_back = 0
-            period_name = "Hari Ini"
+            start_date = now.strftime('%Y-%m-%d')
+            end_date = now.strftime('%Y-%m-%d')
+            period_name = f"{now.day} {months_id[now.month - 1]} {now.year}"
+            
         elif command == "/rekap minggu":
-            days_back = 7
-            period_name = "7 Hari Terakhir"
+            # Monday of the current week (weekday() returns 0 for Monday)
+            monday = now - datetime.timedelta(days=now.weekday())
+            start_date = monday.strftime('%Y-%m-%d')
+            end_date = now.strftime('%Y-%m-%d')
+            
+            start_str = f"{monday.day} {months_id[monday.month - 1]} {monday.year}"
+            end_str = f"{now.day} {months_id[now.month - 1]} {now.year}"
+            period_name = start_str if start_date == end_date else f"{start_str} - {end_str}"
+            
         elif command == "/rekap bulan":
-            days_back = 30
-            period_name = "30 Hari Terakhir"
+            # First day of the current month
+            first_day = now.replace(day=1)
+            start_date = first_day.strftime('%Y-%m-%d')
+            end_date = now.strftime('%Y-%m-%d')
+            
+            period_name = f"Bulan {months_id[now.month - 1]} {now.year}"
+            
         else:
             return
-            
-        start_date = (now - datetime.timedelta(days=days_back)).strftime('%Y-%m-%d')
-        end_date = now.strftime('%Y-%m-%d')
         
         conn = sqlite3.connect("processed_messages.db")
         c = conn.cursor()
