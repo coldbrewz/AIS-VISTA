@@ -360,6 +360,50 @@ def download_whatsapp_media(media_url: str) -> bytes:
     resp.raise_for_status()
     return resp.content
 
+def handle_whatsapp_command(sender_phone, command, session):
+    try:
+        now = datetime.datetime.now()
+        
+        if command in ["/rekap", "/rekap hari ini"]:
+            days_back = 0
+            period_name = "Hari Ini"
+        elif command == "/rekap minggu":
+            days_back = 7
+            period_name = "7 Hari Terakhir"
+        elif command == "/rekap bulan":
+            days_back = 30
+            period_name = "30 Hari Terakhir"
+        else:
+            return
+            
+        start_date = (now - datetime.timedelta(days=days_back)).strftime('%Y-%m-%d')
+        end_date = now.strftime('%Y-%m-%d')
+        
+        conn = sqlite3.connect("processed_messages.db")
+        c = conn.cursor()
+        c.execute('''CREATE TABLE IF NOT EXISTS daily_updates (kode TEXT, date TEXT, UNIQUE(kode, date))''')
+        c.execute("SELECT DISTINCT kode FROM daily_updates WHERE date >= ? AND date <= ?", (start_date, end_date))
+        kodes = [row[0] for row in c.fetchall()]
+        conn.close()
+        
+        total_count = len(kodes)
+        category_counts = {}
+        for k in kodes:
+            match = re.match(r"^\d{6}([A-Z]{2})\d+$", k)
+            if match:
+                cat = match.group(1)
+                category_counts[cat] = category_counts.get(cat, 0) + 1
+        
+        cat_text = "\n".join([f"- *{cat}*: {cnt} Kode" for cat, cnt in sorted(category_counts.items())])
+        if not cat_text:
+            cat_text = "- _Belum ada data SLA_"
+            
+        msg = f"📊 *Live Rekap VISTA* 📊\n\nPeriode: *{period_name}*\nTotal Keseluruhan: *{total_count}* Kode SLA unik telah diperbarui.\n\nRincian per Kategori:\n{cat_text}"
+        
+        send_whatsapp_message(sender_phone, msg, session)
+    except Exception as e:
+        print(f"Error handling whatsapp command: {e}")
+
 def process_message(message: dict):
     sender_phone = message.get("from", "").replace("@c.us", "")
     msg_type = message.get("type") or message.get("_data", {}).get("type")
@@ -369,6 +413,16 @@ def process_message(message: dict):
     print(f"Sender: {sender_phone} | hasMedia: {message.get('hasMedia')}")
     
     message_id = message["id"]
+    body = message.get("body", "")
+    
+    # Intercept WhatsApp Commands
+    if body and isinstance(body, str):
+        text_lower = body.strip().lower()
+        if text_lower in ["/rekap", "/rekap hari ini", "/rekap minggu", "/rekap bulan"]:
+            if not mark_processed(message_id):
+                return
+            handle_whatsapp_command(sender_phone, text_lower, session)
+            return
     
     # ATOMIC RACE-CONDITION LOCK: Immediately insert into DB.
     # If it's already there (rowcount == 0), another thread/webhook is already processing it!
