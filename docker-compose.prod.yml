@@ -8,9 +8,11 @@ services:
     ports:
       - "3000:3000"
     environment:
-      # Disable Passwords
-      - WAHA_DASHBOARD_NO_PASSWORD=True
-      - WHATSAPP_SWAGGER_NO_PASSWORD=True
+      # Secure Dashboard with Password
+      - WAHA_DASHBOARD_USERNAME=${WAHA_DASHBOARD_USERNAME:-admin}
+      - WAHA_DASHBOARD_PASSWORD=${WAHA_DASHBOARD_PASSWORD:-admin123}
+      - WHATSAPP_SWAGGER_USERNAME=${WAHA_DASHBOARD_USERNAME:-admin}
+      - WHATSAPP_SWAGGER_PASSWORD=${WAHA_DASHBOARD_PASSWORD:-admin123}
       # API Key
       - WAHA_API_KEY=${WAHA_API_KEY}
       # CRITICAL: In Docker, WAHA must use the container name "vista_bot" to reach the Python server, not "localhost"

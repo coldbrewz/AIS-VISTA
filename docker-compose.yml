@@ -8,12 +8,11 @@ services:
     ports:
       - "3000:3000"
     environment:
-      # Disable Dashboard Password completely
-      - WAHA_DASHBOARD_PASSWORD=
-      - WAHA_DASHBOARD_NO_PASSWORD=True
-      # Disable Swagger Password completely
-      - WHATSAPP_SWAGGER_PASSWORD=
-      - WHATSAPP_SWAGGER_NO_PASSWORD=True
+      # Secure Dashboard with Password
+      - WAHA_DASHBOARD_USERNAME=${WAHA_DASHBOARD_USERNAME:-admin}
+      - WAHA_DASHBOARD_PASSWORD=${WAHA_DASHBOARD_PASSWORD:-admin123}
+      - WHATSAPP_SWAGGER_USERNAME=${WAHA_DASHBOARD_USERNAME:-admin}
+      - WHATSAPP_SWAGGER_PASSWORD=${WAHA_DASHBOARD_PASSWORD:-admin123}
       # Enable secure API Key using SHA-512 Hash
       - WAHA_API_KEY=sha512:e9b172819cc90f08080f21bf06b428955faeb7074c0f598d8f506eca97a28d1ca82bef0d8f086f44820254df4d96623db107248b759f533b4baa27b2f433a1d3
       # Webhook URL for Python

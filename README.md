@@ -39,6 +39,8 @@ GEMINI_API_KEY=your_gemini_key
 # WhatsApp / WAHA Config
 WAHA_URL=http://localhost:3000
 WAHA_API_KEY=your_secure_waha_api_key
+WAHA_DASHBOARD_USERNAME=admin
+WAHA_DASHBOARD_PASSWORD=super_secure_password_123
 
 # Microsoft Graph API Credentials
 MS_CLIENT_ID=your_azure_client_id
