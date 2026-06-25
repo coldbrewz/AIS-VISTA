@@ -88,9 +88,21 @@ async def daily_recap_scheduler():
             c = conn.cursor()
             # Failsafe create table if not initialized yet
             c.execute('''CREATE TABLE IF NOT EXISTS daily_updates (kode TEXT, date TEXT, UNIQUE(kode, date))''')
-            c.execute("SELECT COUNT(*) FROM daily_updates WHERE date = ?", (yesterday_str,))
-            count = c.fetchone()[0]
+            c.execute("SELECT kode FROM daily_updates WHERE date = ?", (yesterday_str,))
+            kodes = [row[0] for row in c.fetchall()]
             conn.close()
+            
+            total_count = len(kodes)
+            category_counts = {}
+            for k in kodes:
+                match = re.match(r"^\d{6}([A-Z]{2})\d+$", k)
+                if match:
+                    cat = match.group(1)
+                    category_counts[cat] = category_counts.get(cat, 0) + 1
+            
+            cat_text = "\n".join([f"- *{cat}*: {cnt} Kode" for cat, cnt in sorted(category_counts.items())])
+            if not cat_text:
+                cat_text = "- _Tidak ada update_"
             
             admin_phone = settings.ADMIN_PHONE
             if admin_phone:
@@ -100,9 +112,9 @@ async def daily_recap_scheduler():
                 months_id = ["Januari", "Februari", "Maret", "April", "Mei", "Juni", "Juli", "Agustus", "September", "Oktober", "November", "Desember"]
                 date_display = f"{ydt.day} {months_id[ydt.month - 1]} {ydt.year}"
                 
-                msg = f"📊 *Rekap Harian VISTA* 📊\n\nUntuk tanggal: *{date_display}*\nTerdapat *{count}* Kode SLA unik yang telah berhasil diperbarui di dalam sistem."
+                msg = f"📊 *Rekap Harian VISTA* 📊\n\nUntuk tanggal: *{date_display}*\nTotal Keseluruhan: *{total_count}* Kode SLA unik telah diperbarui.\n\nRincian per Kategori:\n{cat_text}"
                 
-                print(f"RECAP SCHEDULER: Sending recap for {count} codes to {admin_phone}")
+                print(f"RECAP SCHEDULER: Sending recap for {total_count} codes to {admin_phone}")
                 send_whatsapp_message(admin_phone, msg, "default")
                 
         except Exception as e:
