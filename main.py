@@ -14,6 +14,7 @@ from services.microsoft import update_excel_row, upload_photo_to_onedrive
 import sys
 
 class TailLogger:
+    is_tail_logger = True
     def __init__(self, filename):
         self.terminal = sys.stdout
         self.filename = filename
@@ -33,8 +34,9 @@ class TailLogger:
             return self.terminal.isatty()
         return False
 
-sys.stdout = TailLogger("vista_bot.log")
-sys.stderr = sys.stdout
+if not hasattr(sys.stdout, "is_tail_logger"):
+    sys.stdout = TailLogger("vista_bot.log")
+    sys.stderr = sys.stdout
 
 is_updating = False
 
