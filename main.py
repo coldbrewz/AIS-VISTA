@@ -11,6 +11,26 @@ from services.llm import extract_sla_data
 from services.whatsapp import send_whatsapp_message
 from services.microsoft import update_excel_row, upload_photo_to_onedrive
 
+import sys
+
+class TailLogger:
+    def __init__(self, filename):
+        self.terminal = sys.stdout
+        self.filename = filename
+        with open(self.filename, "w", encoding="utf-8") as f:
+            f.write("")
+
+    def write(self, message):
+        self.terminal.write(message)
+        with open(self.filename, "a", encoding="utf-8") as f:
+            f.write(message)
+            
+    def flush(self):
+        self.terminal.flush()
+
+sys.stdout = TailLogger("vista_bot.log")
+sys.stderr = sys.stdout
+
 is_updating = False
 
 async def auto_update_waha():
@@ -371,6 +391,15 @@ def process_message(message: dict):
 @app.get("/")
 def read_root():
     return {"status": "VISTA Webhook is running."}
+
+@app.get("/logs")
+def get_logs(lines: int = 200):
+    try:
+        with open("vista_bot.log", "r", encoding="utf-8") as f:
+            all_lines = f.readlines()
+        return Response(content="".join(all_lines[-lines:]), media_type="text/plain")
+    except Exception as e:
+        return {"error": str(e)}
 
 @app.post("/webhook")
 async def webhook_event(request: Request, background_tasks: BackgroundTasks):
