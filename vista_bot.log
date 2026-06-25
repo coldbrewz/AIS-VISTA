@@ -1,40 +1,392 @@
-Traceback (most recent call last):
-  File "C:\Users\admin.DESKTOP-0RB5H2T.000\AppData\Local\Programs\Python\Python314\Lib\logging\config.py", line 583, in configure
-    formatters[name] = self.configure_formatter(
-                       ~~~~~~~~~~~~~~~~~~~~~~~~^
-                                        formatters[name])
-                                        ^^^^^^^^^^^^^^^^^
-  File "C:\Users\admin.DESKTOP-0RB5H2T.000\AppData\Local\Programs\Python\Python314\Lib\logging\config.py", line 693, in configure_formatter
-    result = self.configure_custom(config)
-  File "C:\Users\admin.DESKTOP-0RB5H2T.000\AppData\Local\Programs\Python\Python314\Lib\logging\config.py", line 487, in configure_custom
-    result = c(**kwargs)
-  File "C:\Users\admin.DESKTOP-0RB5H2T.000\AppData\Local\Programs\Python\Python314\Lib\site-packages\uvicorn\logging.py", line 42, in __init__
-    self.use_colors = sys.stdout.isatty()
-                      ^^^^^^^^^^^^^^^^^
-AttributeError: 'TailLogger' object has no attribute 'isatty'
+[32mINFO[0m:     Started server process [[36m28200[0m]
+[32mINFO[0m:     Waiting for application startup.
 
-The above exception was the direct cause of the following exception:
+==============================
+==============================
 
-Traceback (most recent call last):
-  File "C:\Users\admin.DESKTOP-0RB5H2T.000\Documents\AIS-VISTA\main.py", line 427, in <module>
-    uvicorn.run("main:app", host="0.0.0.0", port=5001, reload=True)
-    ~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "C:\Users\admin.DESKTOP-0RB5H2T.000\AppData\Local\Programs\Python\Python314\Lib\site-packages\uvicorn\main.py", line 552, in run
-    config = Config(
-        app,
-    ...<48 lines>...
-        reset_contextvars=reset_contextvars,
-    )
-  File "C:\Users\admin.DESKTOP-0RB5H2T.000\AppData\Local\Programs\Python\Python314\Lib\site-packages\uvicorn\config.py", line 284, in __init__
-    self.configure_logging()
-    ~~~~~~~~~~~~~~~~~~~~~~^^
-  File "C:\Users\admin.DESKTOP-0RB5H2T.000\AppData\Local\Programs\Python\Python314\Lib\site-packages\uvicorn\config.py", line 379, in configure_logging
-    logging.config.dictConfig(self.log_config)
-    ~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^
-  File "C:\Users\admin.DESKTOP-0RB5H2T.000\AppData\Local\Programs\Python\Python314\Lib\logging\config.py", line 946, in dictConfig
-    dictConfigClass(config).configure()
-    ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^^
-  File "C:\Users\admin.DESKTOP-0RB5H2T.000\AppData\Local\Programs\Python\Python314\Lib\logging\config.py", line 586, in configure
-    raise ValueError('Unable to configure '
-                     'formatter %r' % name) from e
-ValueError: Unable to configure formatter 'default'
+🚀 Starting VISTA Integration🚀 Starting VISTA Integration
+
+============================================================
+
+AUTO-UPDATE: Scheduled next WAHA update in 165.89 hours (at 2026-07-02 08:05:00)AUTO-UPDATE: Scheduled next WAHA update in 165.89 hours (at 2026-07-02 08:05:00)
+
+TELEGRAM POLLER: Started listening for /qr commands...TELEGRAM POLLER: Started listening for /qr commands...
+
+EMAIL POLLER: Started listening for 'QR' email replies...EMAIL POLLER: Started listening for 'QR' email replies...
+
+[32mINFO[0m:     Application startup complete.
+
+✅ WATCHDOG: WAHA is online and WORKING!
+
+✅ WATCHDOG: WAHA is online and WORKING!
+
+
+OFFLINE SYNC: Checking for missed messages in session 'default' since 2026-06-24 10:11:33...OFFLINE SYNC: Checking for missed messages in session 'default' since 2026-06-24 10:11:33...
+
+OFFLINE SYNC: Found 4 unread messages in chat 120363406360403978@g.us. Fetching...OFFLINE SYNC: Found 4 unread messages in chat 120363406360403978@g.us. Fetching...
+
+OFFLINE SYNC: Injecting missed message false_120363406360403978@g.us_3AAB7CAB5AD2DB18151F_176677841821761@lid into processing queue...OFFLINE SYNC: Injecting missed message false_120363406360403978@g.us_3AAB7CAB5AD2DB18151F_176677841821761@lid into processing queue...
+
+
+--- New WAHA Message Received ---
+--- New WAHA Message Received ---
+
+Sender: 120363406360403978@g.us | hasMedia: FalseSender: 120363406360403978@g.us | hasMedia: False
+
+OFFLINE SYNC: Injecting missed message false_120363406360403978@g.us_3EB0C1FE8BF2B67E9412AF_30889488707645@lid into processing queue...OFFLINE SYNC: Injecting missed message false_120363406360403978@g.us_3EB0C1FE8BF2B67E9412AF_30889488707645@lid into processing queue...
+
+
+--- New WAHA Message Received ---
+--- New WAHA Message Received ---
+
+Sender: 120363406360403978@g.us | hasMedia: FalseSender: 120363406360403978@g.us | hasMedia: False
+
+OFFLINE SYNC: Injecting missed message false_120363406360403978@g.us_3EB053EDACF9B7BD990890_30889488707645@lid into processing queue...OFFLINE SYNC: Injecting missed message false_120363406360403978@g.us_3EB053EDACF9B7BD990890_30889488707645@lid into processing queue...
+
+
+--- New WAHA Message Received ---
+--- New WAHA Message Received ---
+
+Sender: 120363406360403978@g.us | hasMedia: FalseSender: 120363406360403978@g.us | hasMedia: False
+
+OFFLINE SYNC: Injecting missed message false_120363406360403978@g.us_3EB0DC8C8FDE9812AE9E76_30889488707645@lid into processing queue...OFFLINE SYNC: Injecting missed message false_120363406360403978@g.us_3EB0DC8C8FDE9812AE9E76_30889488707645@lid into processing queue...
+
+
+--- New WAHA Message Received ---
+--- New WAHA Message Received ---
+
+Sender: 120363406360403978@g.us | hasMedia: FalseSender: 120363406360403978@g.us | hasMedia: False
+
+OFFLINE SYNC: Found 1 unread messages in chat 120363245574079984@g.us. Fetching...OFFLINE SYNC: Found 1 unread messages in chat 120363245574079984@g.us. Fetching...
+
+OFFLINE SYNC: Injecting missed message false_120363245574079984@g.us_AC9DAE0437945B0601802CD9044DA9CD_228204530925706@lid into processing queue...OFFLINE SYNC: Injecting missed message false_120363245574079984@g.us_AC9DAE0437945B0601802CD9044DA9CD_228204530925706@lid into processing queue...
+
+
+--- New WAHA Message Received ---
+--- New WAHA Message Received ---
+
+Sender: 120363245574079984@g.us | hasMedia: FalseSender: 120363245574079984@g.us | hasMedia: False
+
+OFFLINE SYNC: Found 2 unread messages in chat 120363425518480054@g.us. Fetching...OFFLINE SYNC: Found 2 unread messages in chat 120363425518480054@g.us. Fetching...
+
+OFFLINE SYNC: Injecting missed message false_120363425518480054@g.us_AC58CE963F51567DD762804CC910A558_183756015067327@lid into processing queue...OFFLINE SYNC: Injecting missed message false_120363425518480054@g.us_AC58CE963F51567DD762804CC910A558_183756015067327@lid into processing queue...
+
+
+--- New WAHA Message Received ---
+--- New WAHA Message Received ---
+
+Sender: 120363425518480054@g.us | hasMedia: TrueSender: 120363425518480054@g.us | hasMedia: True
+
+Message ID: false_120363425518480054@g.us_AC58CE963F51567DD762804CC910A558_183756015067327@lid | Caption: Kode:240626FE007
+Tanggal 25 juni 2026Message ID: false_120363425518480054@g.us_AC58CE963F51567DD762804CC910A558_183756015067327@lid | Caption: Kode:240626FE007
+Tanggal 25 juni 2026
+
+Step 1: Downloading photo via WAHA...Step 1: Downloading photo via WAHA...
+
+Step 2: Extracting AI data...Step 2: Extracting AI data...
+
+[32mINFO[0m:     127.0.0.1:53929 - "[1mGET /logs HTTP/1.1[0m" [32m200 OK[0m
+[32mINFO[0m:     127.0.0.1:53929 - "[1mGET /favicon.ico HTTP/1.1[0m" [31m404 Not Found[0m
+[32mINFO[0m:     127.0.0.1:53929 - "[1mGET /logs HTTP/1.1[0m" [32m200 OK[0m
+[32mINFO[0m:     127.0.0.1:53940 - "[1mGET /logs HTTP/1.1[0m" [32m200 OK[0m
+📊 Token Usage -> Prompt: 587 | Output: 71 | Total: 2059📊 Token Usage -> Prompt: 587 | Output: 71 | Total: 2059
+
+Step 3: Uploading to OneDrive at Dokumentasi SLA/FE/2026/Juni/25...Step 3: Uploading to OneDrive at Dokumentasi SLA/FE/2026/Juni/25...
+
+Step 4: Injecting into Excel (Kode: 240626FE007, Sheet: FE)...Step 4: Injecting into Excel (Kode: 240626FE007, Sheet: FE)...
+
+✅ Success!✅ Success!
+
+OFFLINE SYNC: Injecting missed message false_120363425518480054@g.us_AC4F7B4F372311F96423F03863352E7D_183756015067327@lid into processing queue...OFFLINE SYNC: Injecting missed message false_120363425518480054@g.us_AC4F7B4F372311F96423F03863352E7D_183756015067327@lid into processing queue...
+
+
+--- New WAHA Message Received ---
+--- New WAHA Message Received ---
+
+Sender: 120363425518480054@g.us | hasMedia: TrueSender: 120363425518480054@g.us | hasMedia: True
+
+Skipping duplicate message false_120363425518480054@g.us_AC4F7B4F372311F96423F03863352E7D_183756015067327@lid...Skipping duplicate message false_120363425518480054@g.us_AC4F7B4F372311F96423F03863352E7D_183756015067327@lid...
+
+OFFLINE SYNC: Found 1 unread messages in chat 120363025207683915@g.us. Fetching...OFFLINE SYNC: Found 1 unread messages in chat 120363025207683915@g.us. Fetching...
+
+OFFLINE SYNC: Injecting missed message false_120363025207683915@g.us_AC932A4E7E36C81A78557D0B6F08E4D2_4844773449983@lid into processing queue...OFFLINE SYNC: Injecting missed message false_120363025207683915@g.us_AC932A4E7E36C81A78557D0B6F08E4D2_4844773449983@lid into processing queue...
+
+
+--- New WAHA Message Received ---
+--- New WAHA Message Received ---
+
+Sender: 120363025207683915@g.us | hasMedia: TrueSender: 120363025207683915@g.us | hasMedia: True
+
+Skipping message false_120363025207683915@g.us_AC932A4E7E36C81A78557D0B6F08E4D2_4844773449983@lid: Caption does not contain a valid SLA code format.Skipping message false_120363025207683915@g.us_AC932A4E7E36C81A78557D0B6F08E4D2_4844773449983@lid: Caption does not contain a valid SLA code format.
+
+OFFLINE SYNC: Found 6 unread messages in chat 120363410927504750@g.us. Fetching...OFFLINE SYNC: Found 6 unread messages in chat 120363410927504750@g.us. Fetching...
+
+OFFLINE SYNC: Injecting missed message false_120363410927504750@g.us_ACCB2C3D82C054D8B5BB3CA3D838BA5A_132714657259700@lid into processing queue...OFFLINE SYNC: Injecting missed message false_120363410927504750@g.us_ACCB2C3D82C054D8B5BB3CA3D838BA5A_132714657259700@lid into processing queue...
+
+
+--- New WAHA Message Received ---
+--- New WAHA Message Received ---
+
+Sender: 120363410927504750@g.us | hasMedia: FalseSender: 120363410927504750@g.us | hasMedia: False
+
+OFFLINE SYNC: Injecting missed message false_120363410927504750@g.us_AC29B6218A997BC430A38C19E4484C03_132714657259700@lid into processing queue...OFFLINE SYNC: Injecting missed message false_120363410927504750@g.us_AC29B6218A997BC430A38C19E4484C03_132714657259700@lid into processing queue...
+
+
+--- New WAHA Message Received ---
+--- New WAHA Message Received ---
+
+Sender: 120363410927504750@g.us | hasMedia: FalseSender: 120363410927504750@g.us | hasMedia: False
+
+OFFLINE SYNC: Injecting missed message false_120363410927504750@g.us_AC6135775323F56BBF6A6FFF61615F29_132714657259700@lid into processing queue...OFFLINE SYNC: Injecting missed message false_120363410927504750@g.us_AC6135775323F56BBF6A6FFF61615F29_132714657259700@lid into processing queue...
+
+
+--- New WAHA Message Received ---
+--- New WAHA Message Received ---
+
+Sender: 120363410927504750@g.us | hasMedia: FalseSender: 120363410927504750@g.us | hasMedia: False
+
+OFFLINE SYNC: Injecting missed message false_120363410927504750@g.us_AC6F52FB672C34FB1992D09033FACDCF_204535016493145@lid into processing queue...OFFLINE SYNC: Injecting missed message false_120363410927504750@g.us_AC6F52FB672C34FB1992D09033FACDCF_204535016493145@lid into processing queue...
+
+
+--- New WAHA Message Received ---
+--- New WAHA Message Received ---
+
+Sender: 120363410927504750@g.us | hasMedia: FalseSender: 120363410927504750@g.us | hasMedia: False
+
+Skipping duplicate message false_120363410927504750@g.us_AC6F52FB672C34FB1992D09033FACDCF_204535016493145@lid...Skipping duplicate message false_120363410927504750@g.us_AC6F52FB672C34FB1992D09033FACDCF_204535016493145@lid...
+
+OFFLINE SYNC: Injecting missed message false_120363410927504750@g.us_AC065D8D14E6DE5FB19F55DAEC0F5049_132714657259700@lid into processing queue...OFFLINE SYNC: Injecting missed message false_120363410927504750@g.us_AC065D8D14E6DE5FB19F55DAEC0F5049_132714657259700@lid into processing queue...
+
+
+--- New WAHA Message Received ---
+--- New WAHA Message Received ---
+
+Sender: 120363410927504750@g.us | hasMedia: FalseSender: 120363410927504750@g.us | hasMedia: False
+
+OFFLINE SYNC: Injecting missed message false_120363410927504750@g.us_AC6E758F67249DA7400C1034CC307885_132714657259700@lid into processing queue...OFFLINE SYNC: Injecting missed message false_120363410927504750@g.us_AC6E758F67249DA7400C1034CC307885_132714657259700@lid into processing queue...
+
+
+--- New WAHA Message Received ---
+--- New WAHA Message Received ---
+
+Sender: 120363410927504750@g.us | hasMedia: TrueSender: 120363410927504750@g.us | hasMedia: True
+
+Skipping duplicate message false_120363410927504750@g.us_AC6E758F67249DA7400C1034CC307885_132714657259700@lid...Skipping duplicate message false_120363410927504750@g.us_AC6E758F67249DA7400C1034CC307885_132714657259700@lid...
+
+OFFLINE SYNC: Found 1 unread messages in chat 120363408286376560@g.us. Fetching...OFFLINE SYNC: Found 1 unread messages in chat 120363408286376560@g.us. Fetching...
+
+OFFLINE SYNC: Injecting missed message false_120363408286376560@g.us_AC21E04EA3E4E371660B9FB34573D772_132714657259700@lid into processing queue...OFFLINE SYNC: Injecting missed message false_120363408286376560@g.us_AC21E04EA3E4E371660B9FB34573D772_132714657259700@lid into processing queue...
+
+
+--- New WAHA Message Received ---
+--- New WAHA Message Received ---
+
+Sender: 120363408286376560@g.us | hasMedia: TrueSender: 120363408286376560@g.us | hasMedia: True
+
+Skipping duplicate message false_120363408286376560@g.us_AC21E04EA3E4E371660B9FB34573D772_132714657259700@lid...Skipping duplicate message false_120363408286376560@g.us_AC21E04EA3E4E371660B9FB34573D772_132714657259700@lid...
+
+[32mINFO[0m:     127.0.0.1:54009 - "[1mGET /logs HTTP/1.1[0m" [32m200 OK[0m
+TELEGRAM POLLER ERROR: HTTPSConnectionPool(host='api.telegram.org', port=443): Read timed out. (read timeout=35)TELEGRAM POLLER ERROR: HTTPSConnectionPool(host='api.telegram.org', port=443): Read timed out. (read timeout=35)
+
+[32mINFO[0m:     127.0.0.1:54013 - "[1mPOST /webhook HTTP/1.1[0m" [32m200 OK[0m
+
+--- New WAHA Message Received ---
+--- New WAHA Message Received ---
+
+Sender: 120363410927504750@g.us | hasMedia: FalseSender: 120363410927504750@g.us | hasMedia: False
+
+TELEGRAM POLLER ERROR: HTTPSConnectionPool(host='api.telegram.org', port=443): Read timed out. (read timeout=35)TELEGRAM POLLER ERROR: HTTPSConnectionPool(host='api.telegram.org', port=443): Read timed out. (read timeout=35)
+
+[32mINFO[0m:     127.0.0.1:54051 - "[1mPOST /webhook HTTP/1.1[0m" [32m200 OK[0m
+
+--- New WAHA Message Received ---
+--- New WAHA Message Received ---
+
+Sender: 120363410927504750@g.us | hasMedia: TrueSender: 120363410927504750@g.us | hasMedia: True
+
+Skipping message false_120363410927504750@g.us_A5E894DD439EAFBC16CADC45076213EC_148409004597397@lid: Caption does not contain a valid SLA code format.Skipping message false_120363410927504750@g.us_A5E894DD439EAFBC16CADC45076213EC_148409004597397@lid: Caption does not contain a valid SLA code format.
+
+[32mINFO[0m:     127.0.0.1:54051 - "[1mPOST /webhook HTTP/1.1[0m" [32m200 OK[0m
+
+--- New WAHA Message Received ---
+--- New WAHA Message Received ---
+
+Sender: 120363410927504750@g.us | hasMedia: TrueSender: 120363410927504750@g.us | hasMedia: True
+
+Skipping message false_120363410927504750@g.us_A55C7AF372322F0B460FA40B62C8F1E5_148409004597397@lid: Caption does not contain a valid SLA code format.Skipping message false_120363410927504750@g.us_A55C7AF372322F0B460FA40B62C8F1E5_148409004597397@lid: Caption does not contain a valid SLA code format.
+
+[32mINFO[0m:     127.0.0.1:54051 - "[1mPOST /webhook HTTP/1.1[0m" [32m200 OK[0m
+
+--- New WAHA Message Received ---
+--- New WAHA Message Received ---
+
+Sender: 120363410927504750@g.us | hasMedia: TrueSender: 120363410927504750@g.us | hasMedia: True
+
+Skipping message false_120363410927504750@g.us_A5E8CD6CC88D4444658B85491AE7245A_148409004597397@lid: Caption does not contain a valid SLA code format.Skipping message false_120363410927504750@g.us_A5E8CD6CC88D4444658B85491AE7245A_148409004597397@lid: Caption does not contain a valid SLA code format.
+
+[32mINFO[0m:     127.0.0.1:54051 - "[1mPOST /webhook HTTP/1.1[0m" [32m200 OK[0m
+
+--- New WAHA Message Received ---
+--- New WAHA Message Received ---
+
+Sender: 120363425518480054@g.us | hasMedia: FalseSender: 120363425518480054@g.us | hasMedia: False
+
+[32mINFO[0m:     127.0.0.1:54051 - "[1mPOST /webhook HTTP/1.1[0m" [32m200 OK[0m
+
+--- New WAHA Message Received ---
+--- New WAHA Message Received ---
+
+Sender: 120363410927504750@g.us | hasMedia: TrueSender: 120363410927504750@g.us | hasMedia: True
+
+Skipping message false_120363410927504750@g.us_A56E3FD9F0428E444636471F6FA5A91E_148409004597397@lid: Caption does not contain a valid SLA code format.Skipping message false_120363410927504750@g.us_A56E3FD9F0428E444636471F6FA5A91E_148409004597397@lid: Caption does not contain a valid SLA code format.
+
+[32mINFO[0m:     127.0.0.1:54051 - "[1mPOST /webhook HTTP/1.1[0m" [32m200 OK[0m
+
+--- New WAHA Message Received ---
+--- New WAHA Message Received ---
+
+Sender: 120363410927504750@g.us | hasMedia: TrueSender: 120363410927504750@g.us | hasMedia: True
+
+Skipping message false_120363410927504750@g.us_A590F82F2DB177D8BF4897D1B40201B7_148409004597397@lid: Caption does not contain a valid SLA code format.Skipping message false_120363410927504750@g.us_A590F82F2DB177D8BF4897D1B40201B7_148409004597397@lid: Caption does not contain a valid SLA code format.
+
+[32mINFO[0m:     127.0.0.1:54051 - "[1mPOST /webhook HTTP/1.1[0m" [32m200 OK[0m
+
+--- New WAHA Message Received ---
+--- New WAHA Message Received ---
+
+Sender: 120363410927504750@g.us | hasMedia: TrueSender: 120363410927504750@g.us | hasMedia: True
+
+Skipping message false_120363410927504750@g.us_A550FAAD04D6A8D02C29572D4065374C_148409004597397@lid: Caption does not contain a valid SLA code format.Skipping message false_120363410927504750@g.us_A550FAAD04D6A8D02C29572D4065374C_148409004597397@lid: Caption does not contain a valid SLA code format.
+
+[32mINFO[0m:     127.0.0.1:54051 - "[1mPOST /webhook HTTP/1.1[0m" [32m200 OK[0m
+
+--- New WAHA Message Received ---
+--- New WAHA Message Received ---
+
+Sender: 120363425518480054@g.us | hasMedia: TrueSender: 120363425518480054@g.us | hasMedia: True
+
+Skipping message false_120363425518480054@g.us_ACC84DBFFA7D46914DA9D1E11DE90F9B_183756015067327@lid: Caption does not contain a valid SLA code format.Skipping message false_120363425518480054@g.us_ACC84DBFFA7D46914DA9D1E11DE90F9B_183756015067327@lid: Caption does not contain a valid SLA code format.
+
+[32mINFO[0m:     127.0.0.1:54051 - "[1mPOST /webhook HTTP/1.1[0m" [32m200 OK[0m
+
+--- New WAHA Message Received ---
+--- New WAHA Message Received ---
+
+Sender: 120363410927504750@g.us | hasMedia: TrueSender: 120363410927504750@g.us | hasMedia: True
+
+Skipping message false_120363410927504750@g.us_A57F4630781B6404654EA8374B692481_148409004597397@lid: Caption does not contain a valid SLA code format.Skipping message false_120363410927504750@g.us_A57F4630781B6404654EA8374B692481_148409004597397@lid: Caption does not contain a valid SLA code format.
+
+[32mINFO[0m:     127.0.0.1:54051 - "[1mPOST /webhook HTTP/1.1[0m" [32m200 OK[0m
+
+--- New WAHA Message Received ---
+--- New WAHA Message Received ---
+
+Sender: 120363425518480054@g.us | hasMedia: TrueSender: 120363425518480054@g.us | hasMedia: True
+
+Skipping message false_120363425518480054@g.us_ACD9D78B33AEA3CFD4F2B49A4F8B4A1E_183756015067327@lid: Caption does not contain a valid SLA code format.Skipping message false_120363425518480054@g.us_ACD9D78B33AEA3CFD4F2B49A4F8B4A1E_183756015067327@lid: Caption does not contain a valid SLA code format.
+
+[32mINFO[0m:     127.0.0.1:54096 - "[1mPOST /webhook HTTP/1.1[0m" [32m200 OK[0m
+
+--- New WAHA Message Received ---
+--- New WAHA Message Received ---
+
+Sender: 120363410927504750@g.us | hasMedia: TrueSender: 120363410927504750@g.us | hasMedia: True
+
+Skipping message false_120363410927504750@g.us_A5E8B0D584907FB67C8FCD6F2802EA2C_148409004597397@lid: Caption does not contain a valid SLA code format.Skipping message false_120363410927504750@g.us_A5E8B0D584907FB67C8FCD6F2802EA2C_148409004597397@lid: Caption does not contain a valid SLA code format.
+
+[32mINFO[0m:     127.0.0.1:54096 - "[1mPOST /webhook HTTP/1.1[0m" [32m200 OK[0m
+
+--- New WAHA Message Received ---
+--- New WAHA Message Received ---
+
+Sender: 120363410927504750@g.us | hasMedia: TrueSender: 120363410927504750@g.us | hasMedia: True
+
+Skipping message false_120363410927504750@g.us_A56F888CE8EED22E417674FB3A96D92C_148409004597397@lid: Caption does not contain a valid SLA code format.Skipping message false_120363410927504750@g.us_A56F888CE8EED22E417674FB3A96D92C_148409004597397@lid: Caption does not contain a valid SLA code format.
+
+[32mINFO[0m:     127.0.0.1:54279 - "[1mPOST /webhook HTTP/1.1[0m" [32m200 OK[0m
+
+--- New WAHA Message Received ---
+--- New WAHA Message Received ---
+
+Sender: 120363025207683915@g.us | hasMedia: FalseSender: 120363025207683915@g.us | hasMedia: False
+
+[32mINFO[0m:     127.0.0.1:54279 - "[1mPOST /webhook HTTP/1.1[0m" [32m200 OK[0m
+
+--- New WAHA Message Received ---
+--- New WAHA Message Received ---
+
+Sender: 120363025207683915@g.us | hasMedia: TrueSender: 120363025207683915@g.us | hasMedia: True
+
+Skipping message false_120363025207683915@g.us_AC36E664F0B19761C3F35EF14A6CDE60_158467163705590@lid: Caption does not contain a valid SLA code format.Skipping message false_120363025207683915@g.us_AC36E664F0B19761C3F35EF14A6CDE60_158467163705590@lid: Caption does not contain a valid SLA code format.
+
+[32mINFO[0m:     127.0.0.1:54279 - "[1mPOST /webhook HTTP/1.1[0m" [32m200 OK[0m
+
+--- New WAHA Message Received ---
+--- New WAHA Message Received ---
+
+Sender: 120363025207683915@g.us | hasMedia: TrueSender: 120363025207683915@g.us | hasMedia: True
+
+Skipping message false_120363025207683915@g.us_ACC0EF39C49D5FEE8EACCECE0F5AF33C_158467163705590@lid: Caption does not contain a valid SLA code format.Skipping message false_120363025207683915@g.us_ACC0EF39C49D5FEE8EACCECE0F5AF33C_158467163705590@lid: Caption does not contain a valid SLA code format.
+
+[32mINFO[0m:     127.0.0.1:53086 - "[1mPOST /webhook HTTP/1.1[0m" [32m200 OK[0m
+
+--- New WAHA Message Received ---
+--- New WAHA Message Received ---
+
+Sender: 120363425518480054@g.us | hasMedia: TrueSender: 120363425518480054@g.us | hasMedia: True
+
+Message ID: false_120363425518480054@g.us_AC6A85E3427A730CCC718BFB1C392038_183756015067327@lid | Caption: Kode:240626FE008
+Tanggal 25 juni 2026Message ID: false_120363425518480054@g.us_AC6A85E3427A730CCC718BFB1C392038_183756015067327@lid | Caption: Kode:240626FE008
+Tanggal 25 juni 2026
+
+Step 1: Downloading photo via WAHA...Step 1: Downloading photo via WAHA...
+
+Step 2: Extracting AI data...Step 2: Extracting AI data...
+
+📊 Token Usage -> Prompt: 587 | Output: 71 | Total: 1502📊 Token Usage -> Prompt: 587 | Output: 71 | Total: 1502
+
+Step 3: Uploading to OneDrive at Dokumentasi SLA/FE/2026/Juni/25...Step 3: Uploading to OneDrive at Dokumentasi SLA/FE/2026/Juni/25...
+
+Step 4: Injecting into Excel (Kode: 240626FE008, Sheet: FE)...Step 4: Injecting into Excel (Kode: 240626FE008, Sheet: FE)...
+
+✅ Success!✅ Success!
+
+[32mINFO[0m:     127.0.0.1:61797 - "[1mPOST /webhook HTTP/1.1[0m" [32m200 OK[0m
+
+--- New WAHA Message Received ---
+--- New WAHA Message Received ---
+
+Sender: 120363410927504750@g.us | hasMedia: TrueSender: 120363410927504750@g.us | hasMedia: True
+
+Skipping message false_120363410927504750@g.us_AC2AFCE8EE8FC2C84CA150C6435D92AE_146694759022713@lid: Caption does not contain a valid SLA code format.Skipping message false_120363410927504750@g.us_AC2AFCE8EE8FC2C84CA150C6435D92AE_146694759022713@lid: Caption does not contain a valid SLA code format.
+
+[32mINFO[0m:     127.0.0.1:61802 - "[1mPOST /webhook HTTP/1.1[0m" [32m200 OK[0m
+
+--- New WAHA Message Received ---
+--- New WAHA Message Received ---
+
+Sender: 120363025207683915@g.us | hasMedia: TrueSender: 120363025207683915@g.us | hasMedia: True
+
+Skipping message false_120363025207683915@g.us_A5C35A97BE5EA1A6A2676D4F45AA2C41_166799819714801@lid: Caption does not contain a valid SLA code format.Skipping message false_120363025207683915@g.us_A5C35A97BE5EA1A6A2676D4F45AA2C41_166799819714801@lid: Caption does not contain a valid SLA code format.
+
+[32mINFO[0m:     127.0.0.1:61862 - "[1mPOST /webhook HTTP/1.1[0m" [32m200 OK[0m
+
+--- New WAHA Message Received ---
+--- New WAHA Message Received ---
+
+Sender: 120363406360403978@g.us | hasMedia: TrueSender: 120363406360403978@g.us | hasMedia: True
+
+Skipping message false_120363406360403978@g.us_3AC464D4785B6760C52D_176677841821761@lid: Caption does not contain a valid SLA code format.Skipping message false_120363406360403978@g.us_3AC464D4785B6760C52D_176677841821761@lid: Caption does not contain a valid SLA code format.
+
+[32mINFO[0m:     127.0.0.1:61946 - "[1mPOST /webhook HTTP/1.1[0m" [32m200 OK[0m
+
+--- New WAHA Message Received ---
+--- New WAHA Message Received ---
+
+Sender: 120363425518480054@g.us | hasMedia: FalseSender: 120363425518480054@g.us | hasMedia: False
+
+[32mINFO[0m:     Shutting down
+[32mINFO[0m:     Waiting for application shutdown.
+[32mINFO[0m:     Application shutdown complete.
+[32mINFO[0m:     Finished server process [[36m28200[0m]
+[32mINFO[0m:     Stopping reloader process [[36m[1m10616[0m]

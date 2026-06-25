@@ -197,13 +197,7 @@ async def waha_watchdog():
                     except Exception:
                         pass
 
-                if status != "WORKING" or is_crashed:
-                    if not was_offline:
-                        offline_since = datetime.datetime.now().timestamp()
-                    consecutive_failures += 1
-                    was_offline = True
-                    print(f"WATCHDOG: WAHA status={status}, crashed={is_crashed}. Failure count: {consecutive_failures}/3")
-                else:
+                if status == "WORKING" and not is_crashed:
                     consecutive_failures = 0
                     if was_offline:
                         print("\n✅ WATCHDOG: WAHA is online and WORKING!\n")
@@ -217,7 +211,6 @@ async def waha_watchdog():
                         
                         # Send an alert to the admin phone
                         admin_phone = settings.ADMIN_PHONE
-                        session_name = data[0].get("name", "default")
                         if admin_phone:
                             # Clean up the phone number format
                             admin_phone = re.sub(r'\D', '', admin_phone)
@@ -226,6 +219,17 @@ async def waha_watchdog():
                                 send_whatsapp_message(admin_phone, alert_msg, session_name)
                             except Exception as alert_err:
                                 print(f"WATCHDOG: Failed to send recovery alert: {alert_err}")
+                else:
+                    if not was_offline:
+                        offline_since = datetime.datetime.now().timestamp()
+                    was_offline = True
+                    
+                    if is_crashed or status in ["FAILED", "STOPPED"]:
+                        consecutive_failures += 1
+                        print(f"WATCHDOG: WAHA status={status}, crashed={is_crashed}. Failure count: {consecutive_failures}/3")
+                    else:
+                        # e.g. SCAN_QR_CODE or STARTING - Do NOT restart the container while waiting for user!
+                        consecutive_failures = 0
             else:
                 consecutive_failures += 1
                 was_offline = True
