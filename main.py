@@ -66,6 +66,51 @@ async def auto_update_waha():
 from services.email import send_qr_email, email_poller
 from services.telegram import send_telegram_alert, telegram_poller
 
+async def daily_recap_scheduler():
+    """Sends a daily recap at 08:00 WIB of the previous day's unique SLA updates."""
+    while True:
+        now = datetime.datetime.now()
+        # Target 08:00 today
+        target = now.replace(hour=8, minute=0, second=0, microsecond=0)
+        if now >= target:
+            target += datetime.timedelta(days=1)
+            
+        wait_seconds = (target - now).total_seconds()
+        print(f"RECAP SCHEDULER: Next recap scheduled for {target} (in {wait_seconds/3600:.2f} hours)")
+        await asyncio.sleep(wait_seconds)
+        
+        try:
+            # It's now 08:00. We want to check yesterday's date.
+            ydt = datetime.datetime.now() - datetime.timedelta(days=1)
+            yesterday_str = ydt.strftime('%Y-%m-%d')
+            
+            conn = sqlite3.connect("processed_messages.db")
+            c = conn.cursor()
+            # Failsafe create table if not initialized yet
+            c.execute('''CREATE TABLE IF NOT EXISTS daily_updates (kode TEXT, date TEXT, UNIQUE(kode, date))''')
+            c.execute("SELECT COUNT(*) FROM daily_updates WHERE date = ?", (yesterday_str,))
+            count = c.fetchone()[0]
+            conn.close()
+            
+            admin_phone = settings.ADMIN_PHONE
+            if admin_phone:
+                admin_phone = re.sub(r'\D', '', admin_phone)
+                
+                # Format date beautifully (e.g., "24 Juni 2026")
+                months_id = ["Januari", "Februari", "Maret", "April", "Mei", "Juni", "Juli", "Agustus", "September", "Oktober", "November", "Desember"]
+                date_display = f"{ydt.day} {months_id[ydt.month - 1]} {ydt.year}"
+                
+                msg = f"📊 *Rekap Harian VISTA* 📊\n\nUntuk tanggal: *{date_display}*\nTerdapat *{count}* Kode SLA unik yang telah berhasil diperbarui di dalam sistem."
+                
+                print(f"RECAP SCHEDULER: Sending recap for {count} codes to {admin_phone}")
+                send_whatsapp_message(admin_phone, msg, "default")
+                
+        except Exception as e:
+            print(f"RECAP SCHEDULER: Failed to send recap: {e}")
+            
+        # Sleep a bit to avoid double-triggering right at 08:00:00
+        await asyncio.sleep(60)
+
 async def sync_offline_messages(session_name: str = "default", offline_since: float = None):
     # If we don't know exactly when we went offline (e.g. computer restarted), default to 24 hours ago
     if offline_since is None:
@@ -255,18 +300,20 @@ async def waha_watchdog():
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    print("\n==============================")
-    print("🚀 Starting VISTA Integration")
+    print("==============================")
+    print("🚀 Starting VISTA Integration🚀")
     print("==============================")
     
     task1 = asyncio.create_task(waha_watchdog())
     task2 = asyncio.create_task(auto_update_waha())
+    task3 = asyncio.create_task(daily_recap_scheduler())
     asyncio.create_task(telegram_poller())
     asyncio.create_task(email_poller())
     yield
     # Clean up tasks on shutdown
     task1.cancel()
     task2.cancel()
+    task3.cancel()
 
 app = FastAPI(title="Project VISTA Webhook API", lifespan=lifespan)
 
@@ -275,6 +322,11 @@ def init_db():
     c = conn.cursor()
     c.execute('''CREATE TABLE IF NOT EXISTS processed (
                  message_id TEXT PRIMARY KEY
+                 )''')
+    c.execute('''CREATE TABLE IF NOT EXISTS daily_updates (
+                 kode TEXT,
+                 date TEXT,
+                 UNIQUE(kode, date)
                  )''')
     conn.commit()
     conn.close()
@@ -382,6 +434,17 @@ def process_message(message: dict):
                 
                 print("✅ Success!")
                 send_whatsapp_message(sender_phone, f"✅ Update SLA berhasil!\nKode: {payload.kode}", session)
+                
+                # Log successful update into daily_updates tracking
+                try:
+                    today_str = datetime.datetime.now().strftime('%Y-%m-%d')
+                    conn = sqlite3.connect("processed_messages.db")
+                    c = conn.cursor()
+                    c.execute("INSERT OR IGNORE INTO daily_updates (kode, date) VALUES (?, ?)", (payload.kode, today_str))
+                    conn.commit()
+                    conn.close()
+                except Exception as log_err:
+                    print(f"Error logging daily update: {log_err}")
             else:
                 print(f"⚠️ Ignored non-SLA image or failed to extract data: {err}")
                 send_whatsapp_message(sender_phone, f"⚠️ Ekstraksi data gagal untuk Kode *{detected_kode}*: {err}\nPastikan format teks dan gambar sudah sesuai.", session)
