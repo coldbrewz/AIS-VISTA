@@ -1,0 +1,8 @@
+waha_sessions/
+.git/
+__pycache__/
+*.pyc
+.env
+token_cache.bin
+processed_messages.db
+*.log
