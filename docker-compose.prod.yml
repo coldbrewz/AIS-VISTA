@@ -19,6 +19,7 @@ services:
       - WHATSAPP_HOOK_URL=http://vista_bot:5001/webhook
       - WHATSAPP_HOOK_EVENTS=message
       - WHATSAPP_START_SESSION=default
+      - WAHA_DEFAULT_ENGINE=NOWEB
     volumes:
       - ./waha_sessions:/app/.sessions
     depends_on:

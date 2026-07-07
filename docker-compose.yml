@@ -20,6 +20,7 @@ services:
       - WHATSAPP_HOOK_EVENTS=message
       # Auto-start default session
       - WHATSAPP_START_SESSION=default
+      - WAHA_DEFAULT_ENGINE=NOWEB
     volumes:
       # Saves your WhatsApp login permanently so you don't have to scan the QR code again if PC restarts
       - ./waha_sessions:/app/.sessions
