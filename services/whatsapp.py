@@ -1,3 +1,5 @@
+import time
+import random
 import requests
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
@@ -12,23 +14,42 @@ req_session.mount("http://", HTTPAdapter(max_retries=retries))
 
 def send_whatsapp_message(to_phone: str, message: str, session: str = "default"):
     """
-    Sends a text message using the local WAHA Docker container.
+    Sends a text message using the local WAHA Docker container with human-like typing simulation.
     """
-    url = f"{settings.WAHA_URL}/api/sendText"
-    
     # WAHA requires chat IDs to end in @c.us for regular contacts
     chat_id = to_phone if "@" in to_phone else f"{to_phone}@c.us"
-    
-    payload = {
-        "chatId": chat_id,
-        "text": message,
-        "session": session
-    }
     
     headers = {
         "Accept": "application/json",
         "Content-Type": "application/json",
         "X-Api-Key": settings.WAHA_API_KEY
+    }
+    
+    # --- ANTI-BAN SIMULATION ---
+    try:
+        # 1. Send Seen (read receipt)
+        req_session.post(f"{settings.WAHA_URL}/api/sendSeen", json={"chatId": chat_id, "session": session}, headers=headers, timeout=5)
+        
+        # 2. Start Typing
+        req_session.post(f"{settings.WAHA_URL}/api/startTyping", json={"chatId": chat_id, "session": session}, headers=headers, timeout=5)
+        
+        # 3. Dynamic Human Delay based on message length (min 2s, max 6s)
+        delay = min(max(len(message) * 0.05, 2.0), 6.0)
+        # Add random jitter so it's never exactly the same length
+        jitter = random.uniform(0.0, 1.0)
+        time.sleep(delay + jitter)
+        
+        # 4. Stop Typing
+        req_session.post(f"{settings.WAHA_URL}/api/stopTyping", json={"chatId": chat_id, "session": session}, headers=headers, timeout=5)
+    except Exception as e:
+        print(f"Warning: Failed during anti-ban simulation, proceeding to send: {e}")
+    # ---------------------------
+    
+    url = f"{settings.WAHA_URL}/api/sendText"
+    payload = {
+        "chatId": chat_id,
+        "text": message,
+        "session": session
     }
     
     try:

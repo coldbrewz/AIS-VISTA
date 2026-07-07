@@ -115,7 +115,7 @@ async def daily_recap_scheduler():
                 msg = f"📊 *Rekap Harian VISTA* 📊\n\nUntuk tanggal: *{date_display}*\nTotal Keseluruhan: *{total_count}* Kode SLA unik telah diperbarui.\n\nRincian per Kategori:\n{cat_text}"
                 
                 print(f"RECAP SCHEDULER: Sending recap for {total_count} codes to {admin_phone}")
-                send_whatsapp_message(admin_phone, msg, "default")
+                await asyncio.to_thread(send_whatsapp_message, admin_phone, msg, "default")
                 
         except Exception as e:
             print(f"RECAP SCHEDULER: Failed to send recap: {e}")
@@ -275,7 +275,7 @@ async def waha_watchdog():
                             admin_phone = re.sub(r'\D', '', admin_phone)
                             try:
                                 alert_msg = "🚨 *SYSTEM ALERT*\nWAHA Watchdog mendeteksi system crash (Offline/Error). Sistem telah di-restart otomatis dan kembali normal."
-                                send_whatsapp_message(admin_phone, alert_msg, session_name)
+                                await asyncio.to_thread(send_whatsapp_message, admin_phone, alert_msg, session_name)
                             except Exception as alert_err:
                                 print(f"WATCHDOG: Failed to send recovery alert: {alert_err}")
                 else:
