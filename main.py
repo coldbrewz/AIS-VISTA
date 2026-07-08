@@ -310,12 +310,53 @@ async def waha_watchdog():
             
         await asyncio.sleep(30)
 
+async def init_waha_session():
+    print("INIT: Checking WAHA session configuration...")
+    for _ in range(30):
+        try:
+            resp = await asyncio.to_thread(
+                requests.get, 
+                f"{settings.WAHA_URL}/api/sessions", 
+                headers={"X-Api-Key": settings.WAHA_API_KEY}, 
+                timeout=5
+            )
+            if resp.status_code == 200:
+                sessions = resp.json()
+                if not any(s.get("name") == "default" for s in sessions):
+                    print("INIT: Creating 'default' session with NOWEB Store enabled...")
+                    payload = {
+                        "name": "default",
+                        "config": {
+                            "noweb": {
+                                "store": {
+                                    "enabled": True,
+                                    "fullSync": False
+                                }
+                            }
+                        }
+                    }
+                    await asyncio.to_thread(
+                        requests.post, 
+                        f"{settings.WAHA_URL}/api/sessions/start", 
+                        json=payload, 
+                        headers={"X-Api-Key": settings.WAHA_API_KEY},
+                        timeout=10
+                    )
+                    print("INIT: Session created successfully.")
+                else:
+                    print("INIT: 'default' session already exists.")
+                return
+        except Exception:
+            await asyncio.sleep(2)
+    print("INIT: Failed to reach WAHA after 60 seconds.")
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     print("==============================")
     print("🚀 Starting VISTA Integration🚀")
     print("==============================")
     
+    task_init = asyncio.create_task(init_waha_session())
     task1 = asyncio.create_task(waha_watchdog())
     task2 = asyncio.create_task(auto_update_waha())
     task3 = asyncio.create_task(daily_recap_scheduler())
