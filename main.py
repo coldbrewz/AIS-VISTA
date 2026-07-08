@@ -301,7 +301,7 @@ async def waha_watchdog():
         if consecutive_failures >= 3:
             print("WATCHDOG: WAHA has been stuck for 90 seconds. Restarting Docker container now...")
             try:
-                subprocess.run(["docker", "compose", "restart", "waha"], check=False)
+                subprocess.run(["docker", "restart", "waha"], check=False)
                 print("WATCHDOG: Docker restart command sent. Waiting 30s for recovery...")
             except Exception as e:
                 print(f"WATCHDOG: Failed to run docker restart: {e}")
