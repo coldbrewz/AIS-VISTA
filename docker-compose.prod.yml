@@ -36,3 +36,4 @@ services:
       - ./processed_messages.db:/app/processed_messages.db
       - ./.env:/app/.env
       - ./token_cache.bin:/app/token_cache.bin
+      - /var/run/docker.sock:/var/run/docker.sock
