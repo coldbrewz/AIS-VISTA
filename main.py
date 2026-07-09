@@ -84,7 +84,7 @@ async def daily_recap_scheduler():
             ydt = datetime.datetime.now() - datetime.timedelta(days=1)
             yesterday_str = ydt.strftime('%Y-%m-%d')
             
-            conn = sqlite3.connect("processed_messages.db")
+            conn = sqlite3.connect(settings.DB_URL)
             c = conn.cursor()
             # Failsafe create table if not initialized yet
             c.execute('''CREATE TABLE IF NOT EXISTS daily_updates (kode TEXT, date TEXT, UNIQUE(kode, date))''')
@@ -373,7 +373,7 @@ async def lifespan(app: FastAPI):
 app = FastAPI(title="Project VISTA Webhook API", lifespan=lifespan)
 
 def init_db():
-    conn = sqlite3.connect("processed_messages.db")
+    conn = sqlite3.connect(settings.DB_URL)
     c = conn.cursor()
     c.execute('''CREATE TABLE IF NOT EXISTS processed (
                  message_id TEXT PRIMARY KEY
@@ -389,7 +389,7 @@ def init_db():
 init_db()
 
 def mark_processed(message_id: str) -> bool:
-    conn = sqlite3.connect("processed_messages.db")
+    conn = sqlite3.connect(settings.DB_URL)
     c = conn.cursor()
     c.execute("INSERT OR IGNORE INTO processed (message_id) VALUES (?)", (message_id,))
     inserted = c.rowcount > 0
@@ -434,7 +434,7 @@ def handle_whatsapp_command(sender_phone, command, session):
         else:
             return
         
-        conn = sqlite3.connect("processed_messages.db")
+        conn = sqlite3.connect(settings.DB_URL)
         c = conn.cursor()
         c.execute('''CREATE TABLE IF NOT EXISTS daily_updates (kode TEXT, date TEXT, UNIQUE(kode, date))''')
         c.execute("SELECT DISTINCT kode FROM daily_updates WHERE date >= ? AND date <= ?", (start_date, end_date))
@@ -559,7 +559,7 @@ def process_message(message: dict):
                 # Log successful update into daily_updates tracking
                 try:
                     today_str = datetime.datetime.now().strftime('%Y-%m-%d')
-                    conn = sqlite3.connect("processed_messages.db")
+                    conn = sqlite3.connect(settings.DB_URL)
                     c = conn.cursor()
                     c.execute("INSERT OR IGNORE INTO daily_updates (kode, date) VALUES (?, ?)", (payload.kode, today_str))
                     conn.commit()

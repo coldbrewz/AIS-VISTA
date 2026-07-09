@@ -8,6 +8,7 @@ class Settings(BaseSettings):
     WAHA_URL: str = "http://localhost:3000"
     
     ADMIN_PHONE: str = ""
+    DB_URL: str = "processed_messages.db"
     
     ALERT_EMAIL: str = "aistamer@outlook.com"
     SMTP_SERVER: str = "smtp.gmail.com"
