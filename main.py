@@ -144,6 +144,8 @@ async def sync_offline_messages(session_name: str = "default", offline_since: fl
             return
             
         for chat in chats:
+            if not isinstance(chat, dict):
+                continue
             unread_count = chat.get("unreadCount", 0)
             if unread_count > 0:
                 chat_id = chat.get("id", {}).get("_serialized")

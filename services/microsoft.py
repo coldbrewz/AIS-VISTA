@@ -41,6 +41,9 @@ def get_ms_token():
         result = app.acquire_token_silent(["Files.ReadWrite.All"], account=accounts[0])
         if result and "access_token" in result:
             return result["access_token"]
+        print(f"MSAL Silent Token Error: {result}")
+    else:
+        print("MSAL Error: No accounts found in token_cache.bin. The file might be for a different Client ID or empty.")
     raise Exception("Microsoft Authentication Failed. Please run auth_microsoft.py again.")
 
 def encode_share_url(url: str) -> str:
