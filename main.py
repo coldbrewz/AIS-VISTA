@@ -505,7 +505,13 @@ def process_message(message: dict):
             media_url = message.get("media", {}).get("url")
             if not media_url:
                 raise Exception("No media URL found in webhook payload")
-            img_bytes = download_whatsapp_media(media_url)
+            
+            # WAHA may return localhost in the payload, but we are inside Docker
+            import urllib.parse
+            parsed_url = urllib.parse.urlparse(media_url)
+            internal_media_url = f"{settings.WAHA_URL}{parsed_url.path}"
+            
+            img_bytes = download_whatsapp_media(internal_media_url)
             
             # 2. Process with Gemini Vision FIRST so we get the date/sheet name
             print("Step 2: Extracting AI data...")
