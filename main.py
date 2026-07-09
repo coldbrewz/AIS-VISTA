@@ -265,7 +265,7 @@ async def waha_watchdog():
                         session_name = data[0].get("name", "default")
                         
                         # Trigger offline sync to catch any messages missed during downtime or before boot
-                        asyncio.create_task(sync_offline_messages(session_name, offline_since))
+                        # asyncio.create_task(sync_offline_messages(session_name, offline_since))
                         offline_since = None
                         
                         # Send an alert to the admin phone
@@ -329,7 +329,7 @@ async def init_waha_session():
                         "config": {
                             "noweb": {
                                 "store": {
-                                    "enabled": True,
+                                    "enabled": False,
                                     "fullSync": False
                                 }
                             }
