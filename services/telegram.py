@@ -38,11 +38,13 @@ async def telegram_poller():
                     if str(chat_id) in authorized_ids and "/qr" in text:
                         print("TELEGRAM POLLER: Received /qr request!")
                         # Grab raw QR code image from WAHA
+                        qr_headers = headers.copy()
+                        qr_headers["Accept"] = "image/png"
                         qr_resp = await asyncio.to_thread(
                             requests.get,
                             f"{settings.WAHA_URL}/api/default/auth/qr",
-                            headers=headers,
-                            timeout=15
+                            headers=qr_headers,
+                            timeout=60
                         )
                         if qr_resp.status_code == 200 and 'image' in qr_resp.headers.get('Content-Type', ''):
                             # Send as Photo so it opens instantly without downloading a file (combats QR expiration)

@@ -228,11 +228,13 @@ async def waha_watchdog():
                         print("WATCHDOG: WAHA is logged out. Grabbing native QR and sending email...")
                         try:
                             # Grab raw QR code using WAHA API
+                            qr_headers = headers.copy()
+                            qr_headers["Accept"] = "image/png"
                             qr_resp = await asyncio.to_thread(
                                 requests.get,
                                 f"{settings.WAHA_URL}/api/default/auth/qr",
-                                headers=headers,
-                                timeout=15
+                                headers=qr_headers,
+                                timeout=60
                             )
                             if qr_resp.status_code == 200 and 'image' in qr_resp.headers.get('Content-Type', ''):
                                 await asyncio.to_thread(send_qr_email, qr_resp.content)
