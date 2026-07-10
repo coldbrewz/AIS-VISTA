@@ -127,12 +127,15 @@ def update_excel_row(share_url: str, sheet_name: str, kode: str, tanggal: str, l
     item_id = drive_item["id"]
     
     # 1. Fetch only the bounding box address to avoid downloading massive amounts of data
-    range_url = f"https://graph.microsoft.com/v1.0/drives/{drive_id}/items/{item_id}/workbook/worksheets/{sheet_name}/usedRange?$select=address"
-    range_resp = session.get(range_url, headers=headers, timeout=30)
-    range_resp.raise_for_status()
-    used_range = range_resp.json()
-    
-    address = used_range.get("address", "")
+    try:
+        range_url = f"https://graph.microsoft.com/v1.0/drives/{drive_id}/items/{item_id}/workbook/worksheets/{sheet_name}/usedRange?$select=address"
+        range_resp = session.get(range_url, headers=headers, timeout=30)
+        range_resp.raise_for_status()
+        used_range = range_resp.json()
+        address = used_range.get("address", "")
+    except Exception as e:
+        print(f"usedRange calculation failed on Microsoft servers (likely 504 Timeout due to formatting). Falling back to safe bounds. Error: {e}")
+        address = f"{sheet_name}!A1:AZ50000"
     if "!" in address:
         cells = address.split("!")[1]
     else:
