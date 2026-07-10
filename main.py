@@ -402,6 +402,12 @@ def handle_whatsapp_command(sender_phone, command, session):
         now = datetime.datetime.now()
         months_id = ["Januari", "Februari", "Maret", "April", "Mei", "Juni", "Juli", "Agustus", "September", "Oktober", "November", "Desember"]
         
+        month_map = {m.lower(): i+1 for i, m in enumerate(months_id)}
+        
+        start_date = None
+        end_date = None
+        period_name = ""
+        
         if command in ["/rekap", "/rekap hari ini"]:
             start_date = now.strftime('%Y-%m-%d')
             end_date = now.strftime('%Y-%m-%d')
@@ -410,12 +416,13 @@ def handle_whatsapp_command(sender_phone, command, session):
         elif command == "/rekap minggu":
             # Monday of the current week (weekday() returns 0 for Monday)
             monday = now - datetime.timedelta(days=now.weekday())
+            sunday = monday + datetime.timedelta(days=6)
             start_date = monday.strftime('%Y-%m-%d')
-            end_date = now.strftime('%Y-%m-%d')
+            end_date = now.strftime('%Y-%m-%d')  # Safe query up to current day
             
             start_str = f"{monday.day} {months_id[monday.month - 1]} {monday.year}"
-            end_str = f"{now.day} {months_id[now.month - 1]} {now.year}"
-            period_name = start_str if start_date == end_date else f"{start_str} - {end_str}"
+            end_str = f"{sunday.day} {months_id[sunday.month - 1]} {sunday.year}"
+            period_name = f"{start_str} - {end_str}"
             
         elif command == "/rekap bulan":
             # First day of the current month
@@ -426,6 +433,63 @@ def handle_whatsapp_command(sender_phone, command, session):
             period_name = f"Bulan {months_id[now.month - 1]} {now.year}"
             
         else:
+            # Custom date parsing
+            cmd_content = command.replace("/rekap", "").strip()
+            month_names = "|".join(month_map.keys())
+            
+            # Pattern 1: DD-DD Month YYYY (e.g. 6-12 juli 2026)
+            m1 = re.match(fr"^(\d+)\s*-\s*(\d+)\s+({month_names})(?:\s+(\d{{4}}))?$", cmd_content)
+            # Pattern 2: DD Month - DD Month YYYY
+            m2 = re.match(fr"^(\d+)\s+({month_names})(?:\s+(\d{{4}}))?\s*-\s*(\d+)\s+({month_names})(?:\s+(\d{{4}}))?$", cmd_content)
+            # Pattern 3: DD Month YYYY
+            m3 = re.match(fr"^(\d+)\s+({month_names})(?:\s+(\d{{4}}))?$", cmd_content)
+            
+            try:
+                if m1:
+                    d1_day = int(m1.group(1))
+                    d2_day = int(m1.group(2))
+                    month_name = m1.group(3)
+                    year = int(m1.group(4)) if m1.group(4) else now.year
+                    month_num = month_map[month_name]
+                    
+                    d1 = datetime.date(year, month_num, d1_day)
+                    d2 = datetime.date(year, month_num, d2_day)
+                    
+                    start_date = d1.strftime('%Y-%m-%d')
+                    end_date = d2.strftime('%Y-%m-%d')
+                    period_name = f"{d1.day} {months_id[d1.month-1]} {d1.year} - {d2.day} {months_id[d2.month-1]} {d2.year}"
+                    
+                elif m2:
+                    d1_day = int(m2.group(1))
+                    m1_name = m2.group(2)
+                    y1 = int(m2.group(3)) if m2.group(3) else None
+                    
+                    d2_day = int(m2.group(4))
+                    m2_name = m2.group(5)
+                    y2 = int(m2.group(6)) if m2.group(6) else now.year
+                    
+                    if not y1: y1 = y2
+                    
+                    d1 = datetime.date(y1, month_map[m1_name], d1_day)
+                    d2 = datetime.date(y2, month_map[m2_name], d2_day)
+                    
+                    start_date = d1.strftime('%Y-%m-%d')
+                    end_date = d2.strftime('%Y-%m-%d')
+                    period_name = f"{d1.day} {months_id[d1.month-1]} {d1.year} - {d2.day} {months_id[d2.month-1]} {d2.year}"
+                    
+                elif m3:
+                    d1_day = int(m3.group(1))
+                    m1_name = m3.group(2)
+                    y1 = int(m3.group(3)) if m3.group(3) else now.year
+                    
+                    d1 = datetime.date(y1, month_map[m1_name], d1_day)
+                    start_date = d1.strftime('%Y-%m-%d')
+                    end_date = d1.strftime('%Y-%m-%d')
+                    period_name = f"{d1.day} {months_id[d1.month-1]} {d1.year}"
+            except Exception as parse_err:
+                print(f"Failed to parse custom date: {parse_err}")
+                
+        if not start_date:
             return
         
         conn = sqlite3.connect(settings.DB_URL)

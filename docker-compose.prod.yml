@@ -29,6 +29,8 @@ services:
     build: .
     container_name: vista_bot
     restart: unless-stopped
+    environment:
+      - TZ=Asia/Jakarta
     volumes:
       # Keep the database, env variables, and auth tokens synchronized and persistent
       - ./processed_messages.db:/app/processed_messages.db
