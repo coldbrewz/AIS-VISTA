@@ -506,12 +506,14 @@ def process_message(message: dict):
         try:
             media_url = message.get("media", {}).get("url")
             if not media_url:
-                raise Exception("No media URL found in webhook payload")
-            
-            # WAHA may return localhost in the payload, but we are inside Docker
-            import urllib.parse
-            parsed_url = urllib.parse.urlparse(media_url)
-            internal_media_url = f"{settings.WAHA_URL}{parsed_url.path}"
+                # WPP engine does not provide media.url in the webhook payload.
+                # We must use the WAHA standard download API endpoint.
+                internal_media_url = f"{settings.WAHA_URL}/api/{session}/messages/{message_id}/download"
+            else:
+                # WAHA may return localhost in the payload, but we are inside Docker
+                import urllib.parse
+                parsed_url = urllib.parse.urlparse(media_url)
+                internal_media_url = f"{settings.WAHA_URL}{parsed_url.path}"
             
             img_bytes = download_whatsapp_media(internal_media_url)
             
