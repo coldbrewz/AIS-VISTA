@@ -393,7 +393,7 @@ def mark_processed(message_id: str) -> bool:
 
 def download_whatsapp_media(media_url: str) -> bytes:
     headers = {"X-Api-Key": settings.WAHA_API_KEY}
-    resp = requests.get(media_url, headers=headers)
+    resp = requests.get(media_url, headers=headers, timeout=30)
     resp.raise_for_status()
     return resp.content
 
