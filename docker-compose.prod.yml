@@ -1,5 +1,3 @@
-version: '3.8'
-
 services:
   waha:
     image: devlikeapro/waha
@@ -13,23 +11,20 @@ services:
       - WHATSAPP_SWAGGER_PASSWORD=${WAHA_DASHBOARD_PASSWORD:-admin123}
       # API Key
       - WAHA_API_KEY=${WAHA_API_KEY}
-      # CRITICAL: In Docker, WAHA must use the container name "vista_bot" to reach the Python server, not "localhost"
-      - WHATSAPP_HOOK_URL=http://172.20.0.100:5001/webhook
+      # Use container name so this works both locally and on VPS without needing an external network
+      - WHATSAPP_HOOK_URL=http://vista_bot:5001/webhook
       - WHATSAPP_HOOK_EVENTS=message
       - WHATSAPP_DEFAULT_ENGINE=WPP
     volumes:
       - ./waha_sessions:/app/.sessions
-    # FIX #11: WPP runs a full Chromium browser. Without memory limits, Chrome can consume
-    # all VPS RAM, triggering Linux OOM killer which force-kills and corrupts the WPP session.
-    # NOTE: WPP/Chromium needs at least 1.5GB to start. 2g gives headroom for large groups.
+    # WPP runs a full Chromium browser. 2.5g prevents Linux OOM killer from killing the session.
     mem_limit: 2.5g
-    # WPP/Chromium requires shared memory (/dev/shm). Default 64MB is too small — causes crashes.
+    # WPP/Chromium requires shared memory. Default 64MB is too small and causes Chrome crashes.
     shm_size: 512m
     depends_on:
       - vista_bot
     networks:
-      proxy-network:
-        ipv4_address: 172.20.0.99
+      - vista-network
 
   vista_bot:
     build: .
@@ -45,12 +40,8 @@ services:
       - /var/run/docker.sock:/var/run/docker.sock
     mem_limit: 512m
     networks:
-      proxy-network:
-        ipv4_address: 172.20.0.100
+      - vista-network
 
 networks:
-  proxy-network:
-    external: true
-    ipam:
-      config:
-        - subnet: 172.20.0.1/16
+  vista-network:
+    driver: bridge

@@ -19,3 +19,25 @@ QR Code Email successfully sent to aistamer@outlook.com
 [32mINFO[0m:     Application shutdown complete.
 [32mINFO[0m:     Finished server process [[36m17528[0m]
 [32mINFO[0m:     Stopping reloader process [[36m[1m4184[0m]
+[32mINFO[0m:     Will watch for changes in these directories: ['C:\\Users\\admin.DESKTOP-0RB5H2T.000\\Documents\\AIS-VISTA']
+[32mINFO[0m:     Uvicorn running on [1mhttp://0.0.0.0:5001[0m (Press CTRL+C to quit)
+[32mINFO[0m:     Started reloader process [[36m[1m18008[0m] using [36m[1mStatReload[0m
+[32mINFO[0m:     Started server process [[36m18928[0m]
+[32mINFO[0m:     Waiting for application startup.
+==============================
+🚀 Starting VISTA Integration🚀
+==============================
+INIT: Checking WAHA session configuration...
+AUTO-UPDATE: Scheduled next WAHA update in 152.60 hours (at 2026-07-17 08:05:00)
+RECAP SCHEDULER: Next recap scheduled for 2026-07-11 08:00:00 (in 8.51 hours)
+TELEGRAM POLLER: Started listening for /qr commands...
+EMAIL POLLER: Started listening for 'QR' email replies...
+[32mINFO[0m:     Application startup complete.
+INIT: 'default' session already exists.
+WATCHDOG: WAHA is logged out. Grabbing native QR and sending email...
+QR Code Email successfully sent to aistamer@outlook.com
+WATCHDOG: Cannot reach WAHA (ConnectionError). Failure count: 1/3
+WATCHDOG: Cannot reach WAHA (ConnectionError). Failure count: 2/3
+WATCHDOG: Cannot reach WAHA (ConnectionError). Failure count: 3/3
+WATCHDOG: WAHA has been stuck for 90 seconds. Restarting Docker container now...
+WATCHDOG: Docker restart command sent. Waiting 30s for recovery...
