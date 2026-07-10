@@ -22,7 +22,7 @@ services:
     # FIX #11: WPP runs a full Chromium browser. Without memory limits, Chrome can consume
     # all VPS RAM, triggering Linux OOM killer which force-kills and corrupts the WPP session.
     # NOTE: WPP/Chromium needs at least 1.5GB to start. 2g gives headroom for large groups.
-    mem_limit: 2g
+    mem_limit: 2.5g
     # WPP/Chromium requires shared memory (/dev/shm). Default 64MB is too small — causes crashes.
     shm_size: 512m
     depends_on:
