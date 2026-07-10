@@ -126,13 +126,36 @@ def update_excel_row(share_url: str, sheet_name: str, kode: str, tanggal: str, l
     drive_id = drive_item["parentReference"]["driveId"]
     item_id = drive_item["id"]
     
-    range_url = f"https://graph.microsoft.com/v1.0/drives/{drive_id}/items/{item_id}/workbook/worksheets/{sheet_name}/usedRange"
-    range_resp = session.get(range_url, headers=headers)
+    # 1. Fetch only the bounding box address to avoid downloading massive amounts of data
+    range_url = f"https://graph.microsoft.com/v1.0/drives/{drive_id}/items/{item_id}/workbook/worksheets/{sheet_name}/usedRange?$select=address"
+    range_resp = session.get(range_url, headers=headers, timeout=30)
     range_resp.raise_for_status()
     used_range = range_resp.json()
     
-    values = used_range.get("values", [])
-    texts = used_range.get("text", [])
+    address = used_range.get("address", "")
+    if "!" in address:
+        cells = address.split("!")[1]
+    else:
+        cells = address
+        
+    if ":" in cells:
+        start_cell, end_cell = cells.split(":")
+    else:
+        start_cell = end_cell = cells
+        
+    start_row = int(''.join(filter(str.isdigit, start_cell)))
+    start_col_str = ''.join(filter(str.isalpha, start_cell))
+    end_row = int(''.join(filter(str.isdigit, end_cell)))
+    end_col_str = ''.join(filter(str.isalpha, end_cell))
+    
+    # 2. Fetch ONLY the first column (where Kode SLA is) to find the row
+    kode_url = f"https://graph.microsoft.com/v1.0/drives/{drive_id}/items/{item_id}/workbook/worksheets/{sheet_name}/range(address='{start_col_str}{start_row}:{start_col_str}{end_row}')?$select=values,text"
+    kode_resp = session.get(kode_url, headers=headers, timeout=30)
+    kode_resp.raise_for_status()
+    kode_data = kode_resp.json()
+    
+    values = kode_data.get("values", [])
+    texts = kode_data.get("text", [])
     
     row_index = -1
     kode_str = str(kode).strip().lower()
@@ -148,21 +171,18 @@ def update_excel_row(share_url: str, sheet_name: str, kode: str, tanggal: str, l
     if row_index == -1:
         raise Exception(f"Kode '{kode}' not found in sheet '{sheet_name}'")
     
-    address = used_range.get("address", "")
-    start_row = 1
-    start_col_str = "A"
-    if "!" in address:
-        cells = address.split("!")[1]
-        start_cell = cells.split(":")[0] 
-        start_row = int(''.join(filter(str.isdigit, start_cell)))
-        start_col_str = ''.join(filter(str.isalpha, start_cell))
-        
     start_col_idx = col_letter_to_num(start_col_str)
-    
     actual_excel_row = start_row + row_index
     
-    col_tanggal = find_col_letter(values, "TANGGAL PERBAIKAN", "T", start_col_idx)
-    col_link = find_col_letter(values, "LINK DOKUMENTASI PERBAIKAN", "U", start_col_idx)
+    # 3. Fetch ONLY the first 10 rows to find the headers
+    header_end = min(start_row + 9, end_row)
+    header_url = f"https://graph.microsoft.com/v1.0/drives/{drive_id}/items/{item_id}/workbook/worksheets/{sheet_name}/range(address='{start_col_str}{start_row}:{end_col_str}{header_end}')?$select=values"
+    header_resp = session.get(header_url, headers=headers, timeout=30)
+    header_resp.raise_for_status()
+    header_values = header_resp.json().get("values", [])
+    
+    col_tanggal = find_col_letter(header_values, "TANGGAL PERBAIKAN", "T", start_col_idx)
+    col_link = find_col_letter(header_values, "LINK DOKUMENTASI PERBAIKAN", "U", start_col_idx)
     
     t_url = f"https://graph.microsoft.com/v1.0/drives/{drive_id}/items/{item_id}/workbook/worksheets/{sheet_name}/range(address='{col_tanggal}{actual_excel_row}')"
     session.patch(t_url, headers=headers, json={"values": [[tanggal]]}).raise_for_status()
@@ -171,10 +191,10 @@ def update_excel_row(share_url: str, sheet_name: str, kode: str, tanggal: str, l
     session.patch(doc_url, headers=headers, json={"values": [[link]]}).raise_for_status()
     
     if sheet_name.upper() == "PV":
-        col_metode = find_col_letter(values, "METODE PERBAIKAN", "X", start_col_idx)
-        col_panjang = find_col_letter(values, "Panjang_Realisasi", "AD", start_col_idx)
-        col_lebar = find_col_letter(values, "Lebar_Realisasi", "AE", start_col_idx)
-        col_tebal = find_col_letter(values, "Tebal_Realisasi", "AF", start_col_idx)
+        col_metode = find_col_letter(header_values, "METODE PERBAIKAN", "X", start_col_idx)
+        col_panjang = find_col_letter(header_values, "Panjang_Realisasi", "AD", start_col_idx)
+        col_lebar = find_col_letter(header_values, "Lebar_Realisasi", "AE", start_col_idx)
+        col_tebal = find_col_letter(header_values, "Tebal_Realisasi", "AF", start_col_idx)
         
         if metode:
             m_url = f"https://graph.microsoft.com/v1.0/drives/{drive_id}/items/{item_id}/workbook/worksheets/{sheet_name}/range(address='{col_metode}{actual_excel_row}')"
