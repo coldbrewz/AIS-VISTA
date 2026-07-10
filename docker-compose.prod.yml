@@ -19,6 +19,11 @@ services:
       - WHATSAPP_DEFAULT_ENGINE=WPP
     volumes:
       - ./waha_sessions:/app/.sessions
+    # FIX #11: WPP runs a full Chromium browser. Without memory limits, Chrome can consume
+    # all VPS RAM, triggering Linux OOM killer which force-kills and corrupts the WPP session.
+    mem_limit: 1g
+    # WPP/Chromium requires shared memory (/dev/shm). Default 64MB is too small — causes crashes.
+    shm_size: 512m
     depends_on:
       - vista_bot
     networks:
@@ -37,6 +42,7 @@ services:
       - ./.env:/app/.env
       - ./token_cache.bin:/app/token_cache.bin
       - /var/run/docker.sock:/var/run/docker.sock
+    mem_limit: 512m
     networks:
       proxy-network:
         ipv4_address: 172.20.0.100

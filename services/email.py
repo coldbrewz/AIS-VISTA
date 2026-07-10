@@ -64,18 +64,20 @@ async def email_poller():
                         # Only respond to our own ALERT_EMAIL
                         if "qr" in subject and settings.ALERT_EMAIL.lower() in sender:
                             print("EMAIL POLLER: Received QR request via email reply!")
+                            # FIX #12: Use native QR endpoint (same as watchdog), not screenshot
+                            # The screenshot endpoint returns a full browser page requiring a crop hack
+                            qr_headers = headers.copy()
+                            qr_headers["Accept"] = "image/png"
                             qr_resp = await asyncio.to_thread(
                                 requests.get,
-                                f"{settings.WAHA_URL}/api/screenshot?session=default",
-                                headers=headers,
+                                f"{settings.WAHA_URL}/api/default/auth/qr",
+                                headers=qr_headers,
                                 timeout=15
                             )
-                            if qr_resp.status_code == 200:
-                                import utils
-                                cropped_qr = utils.crop_qr_code(qr_resp.content)
+                            if qr_resp.status_code == 200 and 'image' in qr_resp.headers.get('Content-Type', ''):
                                 await asyncio.to_thread(
                                     send_qr_email, 
-                                    cropped_qr, 
+                                    qr_resp.content, 
                                     "✅ Live WAHA QR Code Attached", 
                                     "Here is your fresh, live QR code. Please scan it immediately."
                                 )

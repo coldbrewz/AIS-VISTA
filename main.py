@@ -11,20 +11,27 @@ from services.llm import extract_sla_data
 from services.whatsapp import send_whatsapp_message
 from services.microsoft import update_excel_row, upload_photo_to_onedrive
 
-import sys
+import logging
+from logging.handlers import RotatingFileHandler
 
+# FIX #9/10: Use Python's RotatingFileHandler instead of manual TailLogger
+# This prevents file handle churn and auto-caps the log at 10MB (3 backups = 30MB max)
 class TailLogger:
+    """Redirect both stdout and stderr to a rotating log file AND the console."""
     is_tail_logger = True
-    def __init__(self, filename):
+    def __init__(self, log_file: str):
         self.terminal = sys.stdout
-        self.filename = filename
-        with open(self.filename, "w", encoding="utf-8") as f:
-            f.write("")
+        self._logger = logging.getLogger("vista")
+        self._logger.setLevel(logging.DEBUG)
+        handler = RotatingFileHandler(log_file, maxBytes=10 * 1024 * 1024, backupCount=3, encoding="utf-8")
+        handler.setFormatter(logging.Formatter('%(message)s'))
+        if not self._logger.handlers:
+            self._logger.addHandler(handler)
 
     def write(self, message):
         self.terminal.write(message)
-        with open(self.filename, "a", encoding="utf-8") as f:
-            f.write(message)
+        if message.strip():
+            self._logger.info(message.rstrip())
             
     def flush(self):
         self.terminal.flush()
@@ -33,6 +40,8 @@ class TailLogger:
         if hasattr(self.terminal, 'isatty'):
             return self.terminal.isatty()
         return False
+
+import sys
 
 if not hasattr(sys.stdout, "is_tail_logger"):
     sys.stdout = TailLogger("vista_bot.log")
@@ -54,8 +63,9 @@ async def auto_update_waha():
         is_updating = True
         print("AUTO-UPDATE: Pulling latest WAHA image...")
         try:
-            await asyncio.to_thread(subprocess.run, ["docker", "compose", "pull", "waha"], check=False)
-            await asyncio.to_thread(subprocess.run, ["docker", "compose", "up", "-d", "waha"], check=False)
+            # FIX #6: Explicitly use the production compose file, not the default dev one
+            await asyncio.to_thread(subprocess.run, ["docker", "compose", "-f", "docker-compose.prod.yml", "pull", "waha"], check=False)
+            await asyncio.to_thread(subprocess.run, ["docker", "compose", "-f", "docker-compose.prod.yml", "up", "-d", "waha"], check=False)
             print("AUTO-UPDATE: WAHA updated successfully.")
         except Exception as e:
             print(f"AUTO-UPDATE: Failed to update WAHA: {e}")
@@ -369,6 +379,8 @@ app = FastAPI(title="Project VISTA Webhook API", lifespan=lifespan)
 def init_db():
     conn = sqlite3.connect(settings.DB_URL)
     c = conn.cursor()
+    # FIX #7: Enable WAL mode for safe concurrent reads/writes from multiple threads
+    c.execute("PRAGMA journal_mode=WAL")
     c.execute('''CREATE TABLE IF NOT EXISTS processed (
                  message_id TEXT PRIMARY KEY
                  )''')
@@ -531,7 +543,8 @@ def process_message(message: dict):
     # Intercept WhatsApp Commands
     if body and isinstance(body, str):
         text_lower = body.strip().lower()
-        if text_lower in ["/rekap", "/rekap hari ini", "/rekap minggu", "/rekap bulan"]:
+        # FIX #4: Use startswith so custom ranges like "/rekap 6 juli" are also captured
+        if text_lower.startswith("/rekap"):
             if not mark_processed(message_id):
                 return
             handle_whatsapp_command(sender_phone, text_lower, session)

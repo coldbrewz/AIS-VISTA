@@ -33,10 +33,11 @@ def send_whatsapp_message(to_phone: str, message: str, session: str = "default")
         # 2. Start Typing
         req_session.post(f"{settings.WAHA_URL}/api/startTyping", json={"chatId": chat_id, "session": session}, headers=headers, timeout=5)
         
-        # 3. Dynamic Human Delay based on message length (min 2s, max 6s)
-        delay = min(max(len(message) * 0.05, 2.0), 6.0)
-        # Add random jitter so it's never exactly the same length
-        jitter = random.uniform(0.0, 1.0)
+        # FIX #8: Cap delay at 3s (was up to 7s) to prevent thread pool exhaustion during
+        # burst message bursts. FastAPI default thread pool is 40 threads.
+        # If 40 messages all sleep 7s, no new webhooks can be processed.
+        delay = min(max(len(message) * 0.05, 1.5), 3.0)
+        jitter = random.uniform(0.0, 0.5)
         time.sleep(delay + jitter)
         
         # 4. Stop Typing

@@ -30,7 +30,8 @@ def get_retry_session():
 def get_ms_token():
     cache = msal.SerializableTokenCache()
     if os.path.exists("token_cache.bin"):
-        cache.deserialize(open("token_cache.bin", "r").read())
+        with open("token_cache.bin", "r") as f:
+            cache.deserialize(f.read())
     app = msal.PublicClientApplication(
         settings.MICROSOFT_CLIENT_ID, 
         authority="https://login.microsoftonline.com/common", 
@@ -39,6 +40,11 @@ def get_ms_token():
     accounts = app.get_accounts()
     if accounts:
         result = app.acquire_token_silent(["Files.ReadWrite.All"], account=accounts[0])
+        # FIX #5: Save the refreshed token cache back to disk immediately
+        # Without this, MSAL refresh tokens eventually expire and auth breaks permanently
+        if cache.has_state_changed:
+            with open("token_cache.bin", "w") as f:
+                f.write(cache.serialize())
         if result and "access_token" in result:
             return result["access_token"]
         print(f"MSAL Silent Token Error: {result}")
@@ -134,8 +140,9 @@ def update_excel_row(share_url: str, sheet_name: str, kode: str, tanggal: str, l
         used_range = range_resp.json()
         address = used_range.get("address", "")
     except Exception as e:
-        print(f"usedRange calculation failed on Microsoft servers (likely 504 Timeout due to formatting). Falling back to safe bounds. Error: {e}")
-        address = f"{sheet_name}!A1:AZ50000"
+        print(f"usedRange calculation failed on Microsoft servers (likely 504 Timeout due to formatting). Falling back to column-A-only bounds. Error: {e}")
+        # FIX #3: Use only column A (not AZ) so Graph only reads one column instead of 52
+        address = f"{sheet_name}!A1:A20000"
     if "!" in address:
         cells = address.split("!")[1]
     else:
@@ -186,6 +193,12 @@ def update_excel_row(share_url: str, sheet_name: str, kode: str, tanggal: str, l
     
     col_tanggal = find_col_letter(header_values, "TANGGAL PERBAIKAN", "T", start_col_idx)
     col_link = find_col_letter(header_values, "LINK DOKUMENTASI PERBAIKAN", "U", start_col_idx)
+    
+    # FIX #2: Re-acquire a fresh token right before writes to avoid 401 mid-operation
+    # The read phase (usedRange, kode column, headers) can take 30-90 seconds total.
+    # The original token may have expired by the time we reach here.
+    fresh_token = get_ms_token()
+    headers["Authorization"] = f"Bearer {fresh_token}"
     
     t_url = f"https://graph.microsoft.com/v1.0/drives/{drive_id}/items/{item_id}/workbook/worksheets/{sheet_name}/range(address='{col_tanggal}{actual_excel_row}')"
     session.patch(t_url, headers=headers, json={"values": [[tanggal]]}).raise_for_status()
