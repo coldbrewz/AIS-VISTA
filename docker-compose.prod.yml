@@ -46,4 +46,4 @@ networks:
     external: true
     ipam:
       config:
-        - subnet: 172.20.0.99
+        - subnet: 172.20.0.1/16
