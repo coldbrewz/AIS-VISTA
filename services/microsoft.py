@@ -158,31 +158,33 @@ def update_excel_row(share_url: str, sheet_name: str, kode: str, tanggal: str, l
     end_row = int(''.join(filter(str.isdigit, end_cell)))
     end_col_str = ''.join(filter(str.isalpha, end_cell))
     
-    # 2. Fetch ONLY the first column (where Kode SLA is) to find the row
-    kode_url = f"https://graph.microsoft.com/v1.0/drives/{drive_id}/items/{item_id}/workbook/worksheets/{sheet_name}/range(address='{start_col_str}{start_row}:{start_col_str}{end_row}')?$select=values,text"
-    kode_resp = session.get(kode_url, headers=headers, timeout=30)
-    kode_resp.raise_for_status()
-    kode_data = kode_resp.json()
+    # 2. Use Excel's MATCH function on Microsoft's servers to find the row instantly
+    # This completely bypasses downloading the massive column and prevents 504 Timeouts!
+    match_url = f"https://graph.microsoft.com/v1.0/drives/{drive_id}/items/{item_id}/workbook/functions/match"
+    # Ensure sheet name with spaces is properly quoted for the address
+    safe_sheet_name = f"'{sheet_name}'" if " " in sheet_name else sheet_name
     
-    values = kode_data.get("values", [])
-    texts = kode_data.get("text", [])
+    match_payload = {
+        "lookupValue": str(kode).strip(),
+        # Passing just the string address often fails in Graph, it needs a Range reference object
+        "lookupArray": {"address": f"{safe_sheet_name}!{start_col_str}{start_row}:{start_col_str}{end_row}"},
+        "matchType": 0  # 0 = exact match
+    }
     
-    row_index = -1
-    kode_str = str(kode).strip().lower()
+    match_resp = session.post(match_url, headers=headers, json=match_payload, timeout=15)
+    match_resp.raise_for_status()
+    match_data = match_resp.json()
     
-    for i in range(len(values)):
-        val = str(values[i][0]).strip().lower() if i < len(values) and len(values[i]) > 0 and values[i][0] is not None else ""
-        txt = str(texts[i][0]).strip().lower() if i < len(texts) and len(texts[i]) > 0 and texts[i][0] is not None else ""
+    match_value = match_data.get("value")
+    
+    # If not found, Excel returns "#N/A" string or similar error value instead of an integer
+    if not isinstance(match_value, int):
+        raise Exception(f"Kode '{kode}' not found in sheet '{sheet_name}' (MATCH returned: {match_value})")
         
-        if val == kode_str or txt == kode_str:
-            row_index = i
-            break
-            
-    if row_index == -1:
-        raise Exception(f"Kode '{kode}' not found in sheet '{sheet_name}'")
-    
+    # MATCH returns a 1-based relative index. 
+    # If start_row is 1, and match is 1st item, actual row is 1 + 1 - 1 = 1
+    actual_excel_row = start_row + match_value - 1
     start_col_idx = col_letter_to_num(start_col_str)
-    actual_excel_row = start_row + row_index
     
     # 3. Fetch ONLY the first 10 rows to find the headers
     header_end = min(start_row + 9, end_row)
