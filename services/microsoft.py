@@ -178,30 +178,50 @@ def update_excel_row(share_url: str, sheet_name: str, kode: str, tanggal: str, l
     fresh_token = get_ms_token()
     headers["Authorization"] = f"Bearer {fresh_token}"
     
-    t_url = f"https://graph.microsoft.com/v1.0/drives/{drive_id}/items/{item_id}/workbook/worksheets/{sheet_name}/range(address='{col_tanggal}{actual_excel_row}')"
-    session.patch(t_url, headers=headers, json={"values": [[tanggal]]}).raise_for_status()
+    # 4. CRITICAL PERFORMANCE FIX: Create an Excel Session!
+    # Without a session, Microsoft Graph opens, recalculates, and closes the massive workbook for EVERY single PATCH request.
+    # On a large file, this takes ~60 seconds per cell update (2 minutes for 2 cells).
+    # With a session, the file stays open in memory and updates happen in milliseconds!
+    session_url = f"https://graph.microsoft.com/v1.0/drives/{drive_id}/items/{item_id}/workbook/createSession"
+    session_resp = session.post(session_url, headers=headers, json={"persistChanges": True}, timeout=30)
+    session_resp.raise_for_status()
+    workbook_session_id = session_resp.json().get("id")
     
-    doc_url = f"https://graph.microsoft.com/v1.0/drives/{drive_id}/items/{item_id}/workbook/worksheets/{sheet_name}/range(address='{col_link}{actual_excel_row}')"
-    session.patch(doc_url, headers=headers, json={"values": [[link]]}).raise_for_status()
+    # Add the session ID to the headers for all subsequent operations
+    headers["workbook-session-id"] = workbook_session_id
     
-    if sheet_name.upper() == "PV":
-        col_metode = "X"
-        col_panjang = "AD"
-        col_lebar = "AE"
-        col_tebal = "AF"
+    try:
+        t_url = f"https://graph.microsoft.com/v1.0/drives/{drive_id}/items/{item_id}/workbook/worksheets/{sheet_name}/range(address='{col_tanggal}{actual_excel_row}')"
+        session.patch(t_url, headers=headers, json={"values": [[tanggal]]}).raise_for_status()
         
-        if metode:
-            m_url = f"https://graph.microsoft.com/v1.0/drives/{drive_id}/items/{item_id}/workbook/worksheets/{sheet_name}/range(address='{col_metode}{actual_excel_row}')"
-            session.patch(m_url, headers=headers, json={"values": [[metode]]}).raise_for_status()
+        doc_url = f"https://graph.microsoft.com/v1.0/drives/{drive_id}/items/{item_id}/workbook/worksheets/{sheet_name}/range(address='{col_link}{actual_excel_row}')"
+        session.patch(doc_url, headers=headers, json={"values": [[link]]}).raise_for_status()
+    
+        if sheet_name.upper() == "PV":
+            col_metode = "X"
+            col_panjang = "AD"
+            col_lebar = "AE"
+            col_tebal = "AF"
             
-        if panjang:
-            p_url = f"https://graph.microsoft.com/v1.0/drives/{drive_id}/items/{item_id}/workbook/worksheets/{sheet_name}/range(address='{col_panjang}{actual_excel_row}')"
-            session.patch(p_url, headers=headers, json={"values": [[panjang]]}).raise_for_status()
-        if lebar:
-            l_url = f"https://graph.microsoft.com/v1.0/drives/{drive_id}/items/{item_id}/workbook/worksheets/{sheet_name}/range(address='{col_lebar}{actual_excel_row}')"
-            session.patch(l_url, headers=headers, json={"values": [[lebar]]}).raise_for_status()
-        if tebal:
-            t_url = f"https://graph.microsoft.com/v1.0/drives/{drive_id}/items/{item_id}/workbook/worksheets/{sheet_name}/range(address='{col_tebal}{actual_excel_row}')"
-            session.patch(t_url, headers=headers, json={"values": [[tebal]]}).raise_for_status()
+            if metode:
+                m_url = f"https://graph.microsoft.com/v1.0/drives/{drive_id}/items/{item_id}/workbook/worksheets/{sheet_name}/range(address='{col_metode}{actual_excel_row}')"
+                session.patch(m_url, headers=headers, json={"values": [[metode]]}).raise_for_status()
+                
+            if panjang:
+                p_url = f"https://graph.microsoft.com/v1.0/drives/{drive_id}/items/{item_id}/workbook/worksheets/{sheet_name}/range(address='{col_panjang}{actual_excel_row}')"
+                session.patch(p_url, headers=headers, json={"values": [[panjang]]}).raise_for_status()
+            if lebar:
+                l_url = f"https://graph.microsoft.com/v1.0/drives/{drive_id}/items/{item_id}/workbook/worksheets/{sheet_name}/range(address='{col_lebar}{actual_excel_row}')"
+                session.patch(l_url, headers=headers, json={"values": [[lebar]]}).raise_for_status()
+            if tebal:
+                t_url = f"https://graph.microsoft.com/v1.0/drives/{drive_id}/items/{item_id}/workbook/worksheets/{sheet_name}/range(address='{col_tebal}{actual_excel_row}')"
+                session.patch(t_url, headers=headers, json={"values": [[tebal]]}).raise_for_status()
+    finally:
+        # ALWAYS close the session so the Excel file doesn't stay locked for other users!
+        try:
+            close_url = f"https://graph.microsoft.com/v1.0/drives/{drive_id}/items/{item_id}/workbook/closeSession"
+            session.post(close_url, headers=headers, timeout=10)
+        except Exception as e:
+            print(f"Warning: Failed to close Excel session: {e}")
 
     return True

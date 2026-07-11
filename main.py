@@ -651,8 +651,20 @@ def process_message(message: dict):
         except Exception as process_err:
             import traceback
             err_trace = traceback.format_exc()
+            err_str = str(process_err)
             print(f"Error processing image:\n{err_trace}")
-            send_whatsapp_message(sender_phone, f"⚠️ Maaf, terjadi kendala teknis saat menyimpan data SLA untuk Kode *{detected_kode}*. Mohon coba kirim ulang beberapa saat lagi.", session)
+            
+            # Provide specific, helpful error messages to the WhatsApp user
+            if "not found in sheet" in err_str:
+                reply_msg = f"❌ *Update Gagal*\nKode SLA *{detected_kode}* tidak ditemukan di dalam sheet Excel. Mohon periksa kembali apakah kodenya sudah benar."
+            elif "504" in err_str or "Timeout" in err_str or "MaxRetryError" in err_str:
+                reply_msg = f"⚠️ *Server Microsoft Sibuk*\nSistem gagal menghubungi file Excel karena server Microsoft sedang lambat/sibuk. Mohon tunggu 1 menit dan kirim ulang fotonya."
+            elif "Token" in err_str or "401" in err_str:
+                reply_msg = f"🔐 *Sesi Kedaluwarsa*\nSesi Microsoft Excel terputus. Sistem akan otomatis menyambung ulang, mohon kirim ulang fotonya."
+            else:
+                reply_msg = f"⚠️ *Kendala Teknis*\nTerjadi error sistem saat memproses Kode *{detected_kode}*. Mohon coba lagi atau lapor ke IT.\n\n_Pesan Error: {err_str[:100]}..._"
+                
+            send_whatsapp_message(sender_phone, reply_msg, session)
     else:
         # No media attached
         body = message.get("body", "")
