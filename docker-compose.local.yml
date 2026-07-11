@@ -3,23 +3,20 @@ services:
     image: devlikeapro/waha
     container_name: waha
     restart: unless-stopped
+    ports:
+      - "3000:3000"
     environment:
-      # Secure Dashboard with Password
       - WAHA_DASHBOARD_USERNAME=${WAHA_DASHBOARD_USERNAME:-admin}
       - WAHA_DASHBOARD_PASSWORD=${WAHA_DASHBOARD_PASSWORD:-admin123}
       - WHATSAPP_SWAGGER_USERNAME=${WAHA_DASHBOARD_USERNAME:-admin}
       - WHATSAPP_SWAGGER_PASSWORD=${WAHA_DASHBOARD_PASSWORD:-admin123}
-      # API Key
       - WAHA_API_KEY=${WAHA_API_KEY}
-      # Use container name so this works both locally and on VPS without needing an external network
       - WHATSAPP_HOOK_URL=http://vistabot:5001/webhook
       - WHATSAPP_HOOK_EVENTS=message
       - WHATSAPP_DEFAULT_ENGINE=WPP
     volumes:
       - ./waha_sessions:/app/.sessions
-    # WPP runs a full Chromium browser. 2.5g prevents Linux OOM killer from killing the session.
     mem_limit: 2.5g
-    # WPP/Chromium requires shared memory. Default 64MB is too small and causes Chrome crashes.
     shm_size: 512m
     depends_on:
       - vista_bot
@@ -30,10 +27,11 @@ services:
     build: .
     container_name: vista_bot
     restart: unless-stopped
+    ports:
+      - "5001:5001"
     environment:
       - TZ=Asia/Jakarta
     volumes:
-      # Keep the database, env variables, and auth tokens synchronized and persistent
       - ./processed_messages.db:/app/processed_messages.db
       - ./.env:/app/.env
       - ./token_cache.bin:/app/token_cache.bin
@@ -47,3 +45,4 @@ services:
 networks:
   vista-network:
     driver: bridge
+
