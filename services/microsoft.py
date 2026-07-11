@@ -137,7 +137,7 @@ def update_excel_row(share_url: str, sheet_name: str, kode: str, tanggal: str, l
     start_col_str = "A"
     start_row = 1
     end_col_str = "AZ"
-    end_row = 20000
+    end_row = 100000
     
     # CRITICAL PERFORMANCE FIX: Create an Excel Session FIRST!
     # Opening the workbook takes time. Creating a session keeps it open for all operations.
