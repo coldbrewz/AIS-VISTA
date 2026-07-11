@@ -167,15 +167,10 @@ def update_excel_row(share_url: str, sheet_name: str, kode: str, tanggal: str, l
     actual_excel_row = start_row + match_value - 1
     start_col_idx = col_letter_to_num(start_col_str)
     
-    # 3. Fetch ONLY the first 10 rows to find the headers
-    header_end = min(start_row + 9, end_row)
-    header_url = f"https://graph.microsoft.com/v1.0/drives/{drive_id}/items/{item_id}/workbook/worksheets/{sheet_name}/range(address='{start_col_str}{start_row}:{end_col_str}{header_end}')?$select=values"
-    header_resp = session.get(header_url, headers=headers, timeout=30)
-    header_resp.raise_for_status()
-    header_values = header_resp.json().get("values", [])
-    
-    col_tanggal = find_col_letter(header_values, "TANGGAL PERBAIKAN", "T", start_col_idx)
-    col_link = find_col_letter(header_values, "LINK DOKUMENTASI PERBAIKAN", "U", start_col_idx)
+    # 3. Skip header fetch entirely! Any GET request for range values on this massive file causes a 504 Timeout.
+    # Since the Excel template is static, we can safely hardcode the known column letters.
+    col_tanggal = "T"
+    col_link = "U"
     
     # FIX #2: Re-acquire a fresh token right before writes to avoid 401 mid-operation
     # The read phase (usedRange, kode column, headers) can take 30-90 seconds total.
@@ -190,10 +185,10 @@ def update_excel_row(share_url: str, sheet_name: str, kode: str, tanggal: str, l
     session.patch(doc_url, headers=headers, json={"values": [[link]]}).raise_for_status()
     
     if sheet_name.upper() == "PV":
-        col_metode = find_col_letter(header_values, "METODE PERBAIKAN", "X", start_col_idx)
-        col_panjang = find_col_letter(header_values, "Panjang_Realisasi", "AD", start_col_idx)
-        col_lebar = find_col_letter(header_values, "Lebar_Realisasi", "AE", start_col_idx)
-        col_tebal = find_col_letter(header_values, "Tebal_Realisasi", "AF", start_col_idx)
+        col_metode = "X"
+        col_panjang = "AD"
+        col_lebar = "AE"
+        col_tebal = "AF"
         
         if metode:
             m_url = f"https://graph.microsoft.com/v1.0/drives/{drive_id}/items/{item_id}/workbook/worksheets/{sheet_name}/range(address='{col_metode}{actual_excel_row}')"
