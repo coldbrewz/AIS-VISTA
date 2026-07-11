@@ -32,6 +32,7 @@ services:
     restart: unless-stopped
     environment:
       - TZ=Asia/Jakarta
+      - WAHA_URL=http://waha:3000
     volumes:
       # Keep the database, env variables, and auth tokens synchronized and persistent
       - ./processed_messages.db:/app/processed_messages.db

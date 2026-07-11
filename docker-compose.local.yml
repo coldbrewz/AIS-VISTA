@@ -31,6 +31,7 @@ services:
       - "5001:5001"
     environment:
       - TZ=Asia/Jakarta
+      - WAHA_URL=http://waha:3000
     volumes:
       - ./processed_messages.db:/app/processed_messages.db
       - ./.env:/app/.env
