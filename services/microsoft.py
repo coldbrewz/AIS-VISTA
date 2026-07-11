@@ -6,6 +6,13 @@ from urllib3.util.retry import Retry
 import msal
 from config import settings
 
+def num_to_col_letter(n):
+    string = ""
+    while n > 0:
+        n, remainder = divmod(n - 1, 26)
+        string = chr(65 + remainder) + string
+    return string
+
 def get_retry_session():
     session = requests.Session()
     try:
@@ -173,9 +180,20 @@ def update_excel_row(share_url: str, sheet_name: str, kode: str, tanggal: str, l
         actual_excel_row = start_row + match_value - 1
         start_col_idx = col_letter_to_num(start_col_str)
     
-        # 3. Skip header fetch entirely! Any GET request for range values on this massive file causes a 504 Timeout.
-        col_tanggal = "T"
-        col_link = "U"
+        # Dynamically fetch headers from Row 4 to handle shifted columns
+        header_url = f"https://graph.microsoft.com/v1.0/drives/{drive_id}/items/{item_id}/workbook/worksheets/{sheet_name}/range(address='A4:BZ4')"
+        header_resp = session.get(header_url, headers=headers, timeout=15)
+        header_resp.raise_for_status()
+        header_values = header_resp.json().get("values", [[]])[0]
+        
+        def find_col(header_name, default_col):
+            for i, val in enumerate(header_values):
+                if str(val).strip() == header_name:
+                    return num_to_col_letter(i + 1)
+            return default_col
+            
+        col_tanggal = find_col("TANGGAL PERBAIKAN", "T")
+        col_link = find_col("DOKUMENTASI", "U")
         
         # FIX #2: Re-acquire a fresh token right before writes to avoid 401 mid-operation
         fresh_token = get_ms_token()
@@ -191,10 +209,10 @@ def update_excel_row(share_url: str, sheet_name: str, kode: str, tanggal: str, l
         safe_patch(doc_url, link, "Link")
     
         if sheet_name.upper() == "PV":
-            col_metode = "X"
-            col_panjang = "AD"
-            col_lebar = "AE"
-            col_tebal = "AF"
+            col_metode = find_col("METODE PERBAIKAN", "X")
+            col_panjang = find_col("Panjang_Realisasi", "AE")
+            col_lebar = find_col("Lebar_Realisasi", "AF")
+            col_tebal = find_col("Tebal_Realisasi", "AG")
             
             if metode:
                 m_url = f"https://graph.microsoft.com/v1.0/drives/{drive_id}/items/{item_id}/workbook/worksheets/{sheet_name}/range(address='{col_metode}{actual_excel_row}')"
