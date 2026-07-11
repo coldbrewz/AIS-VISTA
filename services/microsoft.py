@@ -193,7 +193,7 @@ def update_excel_row(share_url: str, sheet_name: str, kode: str, tanggal: str, l
             return default_col
             
         col_tanggal = find_col("TANGGAL PERBAIKAN", "T")
-        col_link = find_col("DOKUMENTASI", "U")
+        col_link = find_col("LINK DOKUMENTASI", "U")
         
         # FIX #2: Re-acquire a fresh token right before writes to avoid 401 mid-operation
         fresh_token = get_ms_token()
