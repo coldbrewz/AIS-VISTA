@@ -182,10 +182,13 @@ def update_excel_row(share_url: str, sheet_name: str, kode: str, tanggal: str, l
         headers["Authorization"] = f"Bearer {fresh_token}"
         
         t_url = f"https://graph.microsoft.com/v1.0/drives/{drive_id}/items/{item_id}/workbook/worksheets/{sheet_name}/range(address='{col_tanggal}{actual_excel_row}')"
-        session.patch(t_url, headers=headers, json={"values": [[tanggal]]}).raise_for_status()
-        
-        doc_url = f"https://graph.microsoft.com/v1.0/drives/{drive_id}/items/{item_id}/workbook/worksheets/{sheet_name}/range(address='{col_link}{actual_excel_row}')"
-        session.patch(doc_url, headers=headers, json={"values": [[link]]}).raise_for_status()
+        def safe_patch(url, val, name):
+            resp = session.patch(url, headers=headers, json={"values": [[val]]})
+            if not resp.ok:
+                raise Exception(f"Microsoft Graph rejected update for {name} ({val}) at {url}. Status {resp.status_code}: {resp.text}")
+                
+        safe_patch(t_url, tanggal, "Tanggal")
+        safe_patch(doc_url, link, "Link")
     
         if sheet_name.upper() == "PV":
             col_metode = "X"
@@ -195,17 +198,17 @@ def update_excel_row(share_url: str, sheet_name: str, kode: str, tanggal: str, l
             
             if metode:
                 m_url = f"https://graph.microsoft.com/v1.0/drives/{drive_id}/items/{item_id}/workbook/worksheets/{sheet_name}/range(address='{col_metode}{actual_excel_row}')"
-                session.patch(m_url, headers=headers, json={"values": [[metode]]}).raise_for_status()
+                safe_patch(m_url, metode, "Metode")
                 
             if panjang:
                 p_url = f"https://graph.microsoft.com/v1.0/drives/{drive_id}/items/{item_id}/workbook/worksheets/{sheet_name}/range(address='{col_panjang}{actual_excel_row}')"
-                session.patch(p_url, headers=headers, json={"values": [[panjang]]}).raise_for_status()
+                safe_patch(p_url, panjang, "Panjang")
             if lebar:
                 l_url = f"https://graph.microsoft.com/v1.0/drives/{drive_id}/items/{item_id}/workbook/worksheets/{sheet_name}/range(address='{col_lebar}{actual_excel_row}')"
-                session.patch(l_url, headers=headers, json={"values": [[lebar]]}).raise_for_status()
+                safe_patch(l_url, lebar, "Lebar")
             if tebal:
                 t_url = f"https://graph.microsoft.com/v1.0/drives/{drive_id}/items/{item_id}/workbook/worksheets/{sheet_name}/range(address='{col_tebal}{actual_excel_row}')"
-                session.patch(t_url, headers=headers, json={"values": [[tebal]]}).raise_for_status()
+                safe_patch(t_url, tebal, "Tebal")
     finally:
         # ALWAYS close the session so the Excel file doesn't stay locked for other users!
         try:
