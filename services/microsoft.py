@@ -200,6 +200,8 @@ def update_excel_row(share_url: str, sheet_name: str, kode: str, tanggal: str, l
         headers["Authorization"] = f"Bearer {fresh_token}"
         
         t_url = f"https://graph.microsoft.com/v1.0/drives/{drive_id}/items/{item_id}/workbook/worksheets/{sheet_name}/range(address='{col_tanggal}{actual_excel_row}')"
+        doc_url = f"https://graph.microsoft.com/v1.0/drives/{drive_id}/items/{item_id}/workbook/worksheets/{sheet_name}/range(address='{col_link}{actual_excel_row}')"
+        
         def safe_patch(url, val, name):
             resp = session.patch(url, headers=headers, json={"values": [[val]]})
             if not resp.ok:
