@@ -139,51 +139,10 @@ def update_excel_row(share_url: str, sheet_name: str, kode: str, tanggal: str, l
     end_col_str = "AZ"
     end_row = 20000
     
-    # 2. Use Excel's MATCH function on Microsoft's servers to find the row instantly
-    # This completely bypasses downloading the massive column and prevents 504 Timeouts!
-    match_url = f"https://graph.microsoft.com/v1.0/drives/{drive_id}/items/{item_id}/workbook/functions/match"
-    # Ensure sheet name with spaces is properly quoted for the address
-    safe_sheet_name = f"'{sheet_name}'" if " " in sheet_name else sheet_name
-    
-    match_payload = {
-        "lookupValue": str(kode).strip(),
-        # Passing just the string address often fails in Graph, it needs a Range reference object
-        "lookupArray": {"address": f"{safe_sheet_name}!{start_col_str}{start_row}:{start_col_str}{end_row}"},
-        "matchType": 0  # 0 = exact match
-    }
-    
-    match_resp = session.post(match_url, headers=headers, json=match_payload, timeout=15)
-    match_resp.raise_for_status()
-    match_data = match_resp.json()
-    
-    match_value = match_data.get("value")
-    
-    # If not found, Excel returns "#N/A" string or similar error value instead of an integer
-    if not isinstance(match_value, int):
-        raise Exception(f"Kode '{kode}' not found in sheet '{sheet_name}' (MATCH returned: {match_value})")
-        
-    # MATCH returns a 1-based relative index. 
-    # If start_row is 1, and match is 1st item, actual row is 1 + 1 - 1 = 1
-    actual_excel_row = start_row + match_value - 1
-    start_col_idx = col_letter_to_num(start_col_str)
-    
-    # 3. Skip header fetch entirely! Any GET request for range values on this massive file causes a 504 Timeout.
-    # Since the Excel template is static, we can safely hardcode the known column letters.
-    col_tanggal = "T"
-    col_link = "U"
-    
-    # FIX #2: Re-acquire a fresh token right before writes to avoid 401 mid-operation
-    # The read phase (usedRange, kode column, headers) can take 30-90 seconds total.
-    # The original token may have expired by the time we reach here.
-    fresh_token = get_ms_token()
-    headers["Authorization"] = f"Bearer {fresh_token}"
-    
-    # 4. CRITICAL PERFORMANCE FIX: Create an Excel Session!
-    # Without a session, Microsoft Graph opens, recalculates, and closes the massive workbook for EVERY single PATCH request.
-    # On a large file, this takes ~60 seconds per cell update (2 minutes for 2 cells).
-    # With a session, the file stays open in memory and updates happen in milliseconds!
+    # CRITICAL PERFORMANCE FIX: Create an Excel Session FIRST!
+    # Opening the workbook takes time. Creating a session keeps it open for all operations.
     session_url = f"https://graph.microsoft.com/v1.0/drives/{drive_id}/items/{item_id}/workbook/createSession"
-    session_resp = session.post(session_url, headers=headers, json={"persistChanges": True}, timeout=30)
+    session_resp = session.post(session_url, headers=headers, json={"persistChanges": True}, timeout=60)
     session_resp.raise_for_status()
     workbook_session_id = session_resp.json().get("id")
     
@@ -191,6 +150,37 @@ def update_excel_row(share_url: str, sheet_name: str, kode: str, tanggal: str, l
     headers["workbook-session-id"] = workbook_session_id
     
     try:
+    
+        # 2. Use Excel's MATCH function on Microsoft's servers to find the row instantly
+        match_url = f"https://graph.microsoft.com/v1.0/drives/{drive_id}/items/{item_id}/workbook/functions/match"
+        safe_sheet_name = f"'{sheet_name}'" if " " in sheet_name else sheet_name
+        
+        match_payload = {
+            "lookupValue": str(kode).strip(),
+            "lookupArray": {"address": f"{safe_sheet_name}!{start_col_str}{start_row}:{start_col_str}{end_row}"},
+            "matchType": 0
+        }
+        
+        match_resp = session.post(match_url, headers=headers, json=match_payload, timeout=30)
+        match_resp.raise_for_status()
+        match_data = match_resp.json()
+        
+        match_value = match_data.get("value")
+        
+        if not isinstance(match_value, int):
+            raise Exception(f"Kode '{kode}' not found in sheet '{sheet_name}' (MATCH returned: {match_value})")
+            
+        actual_excel_row = start_row + match_value - 1
+        start_col_idx = col_letter_to_num(start_col_str)
+    
+        # 3. Skip header fetch entirely! Any GET request for range values on this massive file causes a 504 Timeout.
+        col_tanggal = "T"
+        col_link = "U"
+        
+        # FIX #2: Re-acquire a fresh token right before writes to avoid 401 mid-operation
+        fresh_token = get_ms_token()
+        headers["Authorization"] = f"Bearer {fresh_token}"
+        
         t_url = f"https://graph.microsoft.com/v1.0/drives/{drive_id}/items/{item_id}/workbook/worksheets/{sheet_name}/range(address='{col_tanggal}{actual_excel_row}')"
         session.patch(t_url, headers=headers, json={"values": [[tanggal]]}).raise_for_status()
         
