@@ -132,31 +132,12 @@ def update_excel_row(share_url: str, sheet_name: str, kode: str, tanggal: str, l
     drive_id = drive_item["parentReference"]["driveId"]
     item_id = drive_item["id"]
     
-    # 1. Fetch only the bounding box address to avoid downloading massive amounts of data
-    try:
-        range_url = f"https://graph.microsoft.com/v1.0/drives/{drive_id}/items/{item_id}/workbook/worksheets/{sheet_name}/usedRange?$select=address"
-        range_resp = session.get(range_url, headers=headers, timeout=30)
-        range_resp.raise_for_status()
-        used_range = range_resp.json()
-        address = used_range.get("address", "")
-    except Exception as e:
-        print(f"usedRange calculation failed on Microsoft servers (likely 504 Timeout due to formatting). Falling back to column-A-only bounds. Error: {e}")
-        # FIX #3: Use only column A (not AZ) so Graph only reads one column instead of 52
-        address = f"{sheet_name}!A1:A20000"
-    if "!" in address:
-        cells = address.split("!")[1]
-    else:
-        cells = address
-        
-    if ":" in cells:
-        start_cell, end_cell = cells.split(":")
-    else:
-        start_cell = end_cell = cells
-        
-    start_row = int(''.join(filter(str.isdigit, start_cell)))
-    start_col_str = ''.join(filter(str.isalpha, start_cell))
-    end_row = int(''.join(filter(str.isdigit, end_cell)))
-    end_col_str = ''.join(filter(str.isalpha, end_cell))
+    # 1. Skip usedRange entirely! It takes up to 90s (30s x 3 retries) to fail on large files.
+    # We know Kode is always in column A, and headers are within A to AZ.
+    start_col_str = "A"
+    start_row = 1
+    end_col_str = "AZ"
+    end_row = 20000
     
     # 2. Use Excel's MATCH function on Microsoft's servers to find the row instantly
     # This completely bypasses downloading the massive column and prevents 504 Timeouts!
