@@ -18,7 +18,7 @@ services:
     volumes:
       - ./waha_sessions:/app/.sessions
     # WPP runs a full Chromium browser. 1g should be enough since it rarely exceeds 800MB.
-    mem_limit: 1g
+    mem_limit: 1.5g
     # WPP/Chromium requires shared memory. Default 64MB is too small and causes Chrome crashes.
     shm_size: 512m
     depends_on:
