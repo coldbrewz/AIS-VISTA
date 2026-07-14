@@ -212,6 +212,8 @@ async def waha_watchdog():
     """Background task to monitor WAHA health and auto-restart if stuck."""
     global is_updating
     consecutive_failures = 0
+    restart_count = 0
+    MAX_RESTARTS_BEFORE_BACKOFF = 3  # After 3 docker restarts, back off to prevent WhatsApp ban
     was_offline = True  # Start as True so we do an offline sync on the very first boot
     offline_since = None
     qr_email_sent = False
@@ -272,6 +274,7 @@ async def waha_watchdog():
 
                 if status == "WORKING" and not is_crashed:
                     consecutive_failures = 0
+                    restart_count = 0  # Reset backoff counter on recovery
                     if was_offline:
                         print("\n✅ WATCHDOG: WAHA is online and WORKING!\n")
                         was_offline = False
@@ -313,16 +316,28 @@ async def waha_watchdog():
             print(f"WATCHDOG: Cannot reach WAHA ({type(e).__name__}). Failure count: {consecutive_failures}/3")
             
         if consecutive_failures >= 3:
-            print("WATCHDOG: WAHA has been stuck for 90 seconds. Restarting Docker container now...")
-            try:
-                subprocess.run(["docker", "restart", "waha"], check=False)
-                print("WATCHDOG: Docker restart command sent. Waiting 30s for recovery...")
-            except Exception as e:
-                print(f"WATCHDOG: Failed to run docker restart: {e}")
-            consecutive_failures = 0
-            await asyncio.sleep(30)
+            restart_count += 1
+            if restart_count <= MAX_RESTARTS_BEFORE_BACKOFF:
+                print(f"WATCHDOG: WAHA stuck. Restarting Docker container (attempt {restart_count}/{MAX_RESTARTS_BEFORE_BACKOFF})...")
+                try:
+                    subprocess.run(["docker", "restart", "waha"], check=False)
+                    print("WATCHDOG: Docker restart command sent. Waiting 30s for recovery...")
+                except Exception as e:
+                    print(f"WATCHDOG: Failed to run docker restart: {e}")
+                consecutive_failures = 0
+                await asyncio.sleep(30)
+            else:
+                # Too many restarts — stop hammering to avoid WhatsApp account restrictions.
+                # Each restart generates a new session/QR registration with WhatsApp's servers.
+                backoff_minutes = 10
+                print(f"WATCHDOG: ⚠️ Hit {MAX_RESTARTS_BEFORE_BACKOFF} restart attempts. Backing off for {backoff_minutes} minutes to protect WhatsApp account.")
+                await asyncio.to_thread(send_telegram_alert, f"⚠️ WAHA has failed {MAX_RESTARTS_BEFORE_BACKOFF} restart attempts. Watchdog is backing off for {backoff_minutes} minutes to prevent WhatsApp account ban. Check /status manually.")
+                consecutive_failures = 0
+                restart_count = 0
+                await asyncio.sleep(backoff_minutes * 60)
             
         await asyncio.sleep(30)
+
 
 async def init_waha_session():
     print("INIT: Checking WAHA session configuration...")
@@ -339,7 +354,15 @@ async def init_waha_session():
                 if not any(s.get("name") == "default" for s in sessions):
                     print("INIT: Creating 'default' session...")
                     payload = {
-                        "name": "default"
+                        "name": "default",
+                        "config": {
+                            "noweb": {
+                                "store": {
+                                    "enabled": True,
+                                    "fullSync": False
+                                }
+                            }
+                        }
                     }
                     await asyncio.to_thread(
                         requests.post, 

@@ -8,3 +8,6 @@ legacy_meta_api/
 waha_sessions/
 
 processed_messages.db
+waha-core/
+waha-local/
+*.log
