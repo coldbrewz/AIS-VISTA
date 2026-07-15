@@ -5,6 +5,7 @@ from fastapi import FastAPI, Request, HTTPException, Query, Response, Background
 import requests
 import datetime
 import re
+import time
 import sqlite3
 from config import settings
 from services.llm import extract_sla_data
@@ -213,7 +214,7 @@ async def sync_offline_messages(session_name: str = "default", offline_since: fl
 
 async def waha_watchdog():
     """Background task to monitor WAHA health and auto-restart if stuck."""
-    global is_updating
+    global is_updating, session_ready_at
     consecutive_failures = 0
     restart_count = 0
     MAX_RESTARTS_BEFORE_BACKOFF = 3  # After 3 docker restarts, back off to prevent WhatsApp ban
@@ -284,9 +285,7 @@ async def waha_watchdog():
                         
                         # Set grace period - don't process messages for 60s
                         # to let WAHA settle and avoid burst activity that triggers WhatsApp bans
-                        import time as _time
-                        global session_ready_at
-                        session_ready_at = _time.time()
+                        session_ready_at = time.time()
                         print("WATCHDOG: 60-second grace period started. Messages will be queued but not processed.")
                         
                         session_name = data[0].get("name", "default")
@@ -387,21 +386,26 @@ async def init_waha_session():
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    print("==============================")
-    print("🚀 Starting VISTA Integration🚀")
-    print("==============================")
-    
-    task_init = asyncio.create_task(init_waha_session())
-    task1 = asyncio.create_task(waha_watchdog())
-    task2 = asyncio.create_task(auto_update_waha())
-    task3 = asyncio.create_task(daily_recap_scheduler())
-    asyncio.create_task(telegram_poller())
-    asyncio.create_task(email_poller())
-    yield
-    # Clean up tasks on shutdown
-    task1.cancel()
-    task2.cancel()
-    task3.cancel()
+    try:
+        print("==============================")
+        print("Starting VISTA Integration")
+        print("==============================")
+        
+        task_init = asyncio.create_task(init_waha_session())
+        task1 = asyncio.create_task(waha_watchdog())
+        task2 = asyncio.create_task(auto_update_waha())
+        task3 = asyncio.create_task(daily_recap_scheduler())
+        asyncio.create_task(telegram_poller())
+        asyncio.create_task(email_poller())
+        yield
+        # Clean up tasks on shutdown
+        task1.cancel()
+        task2.cancel()
+        task3.cancel()
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        raise
 
 app = FastAPI(title="Project VISTA Webhook API", lifespan=lifespan)
 
@@ -569,8 +573,7 @@ def process_message(message: dict):
         return
     
     # ANTI-BAN: Skip messages during the grace period after login
-    import time as _time
-    if session_ready_at > 0 and (_time.time() - session_ready_at) < 60:
+    if session_ready_at > 0 and (time.time() - session_ready_at) < 60:
         print(f"GRACE PERIOD: Skipping message from {sender_phone} (settling after login)")
         return
     
