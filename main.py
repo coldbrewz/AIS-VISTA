@@ -30,12 +30,23 @@ class TailLogger:
             self._logger.addHandler(handler)
 
     def write(self, message):
-        self.terminal.write(message)
+        try:
+            self.terminal.write(message)
+        except (UnicodeEncodeError, OSError):
+            # Windows cp1252 terminal can't handle emoji - write ASCII-safe version
+            try:
+                self.terminal.write(message.encode('ascii', 'replace').decode('ascii'))
+            except OSError:
+                pass
         if message.strip():
             self._logger.info(message.rstrip())
             
     def flush(self):
-        self.terminal.flush()
+        try:
+            self.terminal.flush()
+        except OSError:
+            # uvicorn reload subprocess invalidates the original terminal handle
+            pass
         
     def isatty(self):
         if hasattr(self.terminal, 'isatty'):
