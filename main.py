@@ -48,6 +48,9 @@ if not hasattr(sys.stdout, "is_tail_logger"):
     sys.stderr = sys.stdout
 
 is_updating = False
+# Grace period: don't process messages for 60s after login to avoid
+# triggering WhatsApp anti-bot detection from burst activity
+session_ready_at = 0  # timestamp when session became WORKING
 
 async def auto_update_waha():
     global is_updating
@@ -279,22 +282,25 @@ async def waha_watchdog():
                         print("\n✅ WATCHDOG: WAHA is online and WORKING!\n")
                         was_offline = False
                         
+                        # Set grace period - don't process messages for 60s
+                        # to let WAHA settle and avoid burst activity that triggers WhatsApp bans
+                        import time as _time
+                        global session_ready_at
+                        session_ready_at = _time.time()
+                        print("WATCHDOG: 60-second grace period started. Messages will be queued but not processed.")
+                        
                         session_name = data[0].get("name", "default")
                         
-                        # Trigger offline sync to catch any messages missed during downtime or before boot
-                        asyncio.create_task(sync_offline_messages(session_name, offline_since))
+                        # Delay offline sync by 90 seconds to let WAHA fully settle first
+                        async def delayed_sync(sn, os_ts):
+                            await asyncio.sleep(90)
+                            await sync_offline_messages(sn, os_ts)
+                        asyncio.create_task(delayed_sync(session_name, offline_since))
                         offline_since = None
                         
-                        # Send an alert to the admin phone
-                        admin_phone = settings.ADMIN_PHONE
-                        if admin_phone:
-                            # Clean up the phone number format
-                            admin_phone = re.sub(r'\D', '', admin_phone)
-                            try:
-                                alert_msg = "🚨 *SYSTEM ALERT*\nWAHA Watchdog mendeteksi system crash (Offline/Error). Sistem telah di-restart otomatis dan kembali normal."
-                                await asyncio.to_thread(send_whatsapp_message, admin_phone, alert_msg, session_name)
-                            except Exception as alert_err:
-                                print(f"WATCHDOG: Failed to send recovery alert: {alert_err}")
+                        # Send recovery alert via Telegram only (NOT WhatsApp)
+                        # Sending a WhatsApp message immediately after login contributes to ban detection
+                        await asyncio.to_thread(send_telegram_alert, "✅ WAHA Bot is back online and WORKING!")
                 else:
                     if not was_offline:
                         offline_since = datetime.datetime.now().timestamp()
@@ -557,6 +563,17 @@ def process_message(message: dict):
     msg_type = message.get("type") or message.get("_data", {}).get("type")
     session = message.get("_session", "default")
     
+    # ANTI-BAN: Skip ALL status@broadcast messages (WhatsApp Stories).
+    # These are irrelevant to SLA processing and flood the bot after reconnecting.
+    if "status@broadcast" in sender_phone or "status@broadcast" in message.get("from", ""):
+        return
+    
+    # ANTI-BAN: Skip messages during the grace period after login
+    import time as _time
+    if session_ready_at > 0 and (_time.time() - session_ready_at) < 60:
+        print(f"GRACE PERIOD: Skipping message from {sender_phone} (settling after login)")
+        return
+    
     print(f"\n--- New WAHA Message Received ---")
     print(f"Sender: {sender_phone} | hasMedia: {message.get('hasMedia')}")
     
@@ -722,6 +739,14 @@ async def webhook_event(request: Request, background_tasks: BackgroundTasks):
             # Ignore messages that the bot itself sent
             if payload.get("fromMe") == True:
                 return {"status": "ignored"}
+            
+            # ANTI-BAN: Drop status@broadcast messages at the earliest possible point.
+            # After reconnecting, WhatsApp dumps ALL accumulated Status Stories
+            # (can be 30-100+ messages). Processing them overloads WAHA and
+            # the burst of activity triggers WhatsApp's anti-bot detection.
+            msg_from = payload.get("from", "")
+            if "status@broadcast" in msg_from:
+                return {"status": "ignored_status"}
                 
             payload["_session"] = session
             background_tasks.add_task(process_message, payload)

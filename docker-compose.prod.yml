@@ -15,6 +15,11 @@ services:
       - WHATSAPP_HOOK_URL=http://vistabot:5001/webhook
       - WHATSAPP_HOOK_EVENTS=message
       - WHATSAPP_DEFAULT_ENGINE=WPP
+      # ANTI-BAN: Tell WAHA to completely ignore Status broadcasts and Channels.
+      # Without this, reconnecting after hours offline dumps 30-100+ status messages
+      # into our webhook, overloading WAHA and triggering WhatsApp's anti-bot detection.
+      - WHATSAPP_IGNORE_STATUS=true
+      - WHATSAPP_IGNORE_CHANNELS=true
     volumes:
       - ./waha_sessions:/app/.sessions
     # WPP runs a full Chromium browser. 1g should be enough since it rarely exceeds 800MB.
