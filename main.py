@@ -604,6 +604,7 @@ def process_message(message: dict):
     message_id = extract_message_id(message)
     processing_key = message_id
     if not processing_key:
+        print(f"RAW WEBHOOK PAYLOAD (Missing ID): {message}")
         print("WARNING: Could not extract WAHA message ID from webhook payload. Using fallback key for dedup only.")
         processing_key = f"fallback_{message.get('timestamp', time.time())}_{sender_label or sender_chat_id}"
         
@@ -648,11 +649,20 @@ def process_message(message: dict):
         print("Step 1: Downloading photo via WAHA...")
         
         try:
-            internal_media_url = resolve_media_download_url(message, settings.WAHA_URL)
-            if not internal_media_url:
-                raise Exception("WAHA webhook did not provide a usable media URL or message ID, so the photo cannot be downloaded. Please resend the photo.")
+            # ANTI-BUG: WPP engine often crashes when downloading media and hides the message ID, 
+            # BUT it usually embeds the raw base64 image data directly in the `_data.body` field!
+            raw_data_body = message.get("_data", {}).get("body", "")
+            
+            if raw_data_body and isinstance(raw_data_body, str) and (raw_data_body.startswith("/9j/") or raw_data_body.startswith("iVBORw0K")):
+                print("Step 1: Found Base64 media data directly in webhook payload! Bypassing download API...")
+                import base64
+                img_bytes = base64.b64decode(raw_data_body)
+            else:
+                internal_media_url = resolve_media_download_url(message, settings.WAHA_URL)
+                if not internal_media_url:
+                    raise Exception("WAHA webhook did not provide a usable media URL or message ID, so the photo cannot be downloaded. Please resend the photo.")
 
-            img_bytes = download_whatsapp_media(internal_media_url)
+                img_bytes = download_whatsapp_media(internal_media_url)
             
             # 2. Process with Gemini Vision FIRST so we get the date/sheet name
             print("Step 2: Extracting AI data...")
