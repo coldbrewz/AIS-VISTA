@@ -1,4 +1,5 @@
 import re
+from urllib.parse import urlparse
 
 VALID_SHEET_CODES = ("PV", "DR", "FE", "GR", "SG", "LC", "RM", "CA", "WR")
 KODE_PATTERN = re.compile(
@@ -116,3 +117,24 @@ def extract_kode_from_text(text: str) -> str | None:
         return None
 
     return match.group(1)
+
+
+def resolve_media_download_url(message: dict, base_waha_url: str) -> str | None:
+    media_url = _clean_string(message.get("mediaUrl"))
+    if not media_url:
+        media = message.get("media")
+        if isinstance(media, dict):
+            media_url = _clean_string(media.get("url"))
+
+    if media_url:
+        parsed_url = urlparse(media_url)
+        if parsed_url.scheme and parsed_url.netloc:
+            return f"{base_waha_url}{parsed_url.path}" if parsed_url.path else media_url
+        return media_url
+
+    message_id = extract_message_id(message)
+    if not message_id:
+        return None
+
+    session = _clean_string(message.get("_session")) or "default"
+    return f"{base_waha_url}/api/{session}/messages/{message_id}/download"

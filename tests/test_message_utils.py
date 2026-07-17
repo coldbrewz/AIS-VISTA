@@ -4,6 +4,7 @@ from services.message_utils import (
     extract_kode_from_text,
     extract_message_id,
     normalize_chat_id,
+    resolve_media_download_url,
     resolve_reply_chat_id,
 )
 
@@ -52,6 +53,28 @@ class MessageUtilsTests(unittest.TestCase):
 
     def test_extract_kode_from_text_supports_longer_suffixes(self):
         self.assertEqual(extract_kode_from_text("Kode:270707CA00001"), "270707CA00001")
+
+    def test_resolve_media_download_url_prefers_top_level_media_url(self):
+        message = {
+            "mediaUrl": "http://localhost:3000/api/files/false_218880291143697@lid_TEST.jpg",
+            "_session": "default",
+        }
+
+        self.assertEqual(
+            resolve_media_download_url(message, "http://waha:3000"),
+            "http://waha:3000/api/files/false_218880291143697@lid_TEST.jpg",
+        )
+
+    def test_resolve_media_download_url_falls_back_to_message_download(self):
+        message = {
+            "id": {"_serialized": "false_218880291143697@lid_TEST"},
+            "_session": "default",
+        }
+
+        self.assertEqual(
+            resolve_media_download_url(message, "http://waha:3000"),
+            "http://waha:3000/api/default/messages/false_218880291143697@lid_TEST/download",
+        )
 
 
 if __name__ == "__main__":

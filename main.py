@@ -9,7 +9,7 @@ import time
 import sqlite3
 from config import settings
 from services.llm import extract_sla_data
-from services.message_utils import extract_kode_from_text, extract_message_id, resolve_reply_chat_id
+from services.message_utils import extract_kode_from_text, extract_message_id, resolve_media_download_url, resolve_reply_chat_id
 from services.whatsapp import send_whatsapp_message
 from services.microsoft import update_excel_row, upload_photo_to_onedrive
 
@@ -648,19 +648,10 @@ def process_message(message: dict):
         print("Step 1: Downloading photo via WAHA...")
         
         try:
-            media_url = message.get("media", {}).get("url")
-            if not media_url:
-                # WPP engine does not provide media.url in the webhook payload.
-                # We must use the WAHA standard download API endpoint.
-                if not message_id:
-                    raise Exception("WAHA webhook did not provide a usable message ID, so the photo cannot be downloaded. Please resend the photo.")
-                internal_media_url = f"{settings.WAHA_URL}/api/{session}/messages/{message_id}/download"
-            else:
-                # WAHA may return localhost in the payload, but we are inside Docker
-                import urllib.parse
-                parsed_url = urllib.parse.urlparse(media_url)
-                internal_media_url = f"{settings.WAHA_URL}{parsed_url.path}"
-            
+            internal_media_url = resolve_media_download_url(message, settings.WAHA_URL)
+            if not internal_media_url:
+                raise Exception("WAHA webhook did not provide a usable media URL or message ID, so the photo cannot be downloaded. Please resend the photo.")
+
             img_bytes = download_whatsapp_media(internal_media_url)
             
             # 2. Process with Gemini Vision FIRST so we get the date/sheet name
