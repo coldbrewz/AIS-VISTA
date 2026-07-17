@@ -9,6 +9,7 @@ import time
 import sqlite3
 from config import settings
 from services.llm import extract_sla_data
+from services.message_utils import extract_kode_from_text, extract_message_id, resolve_reply_chat_id
 from services.whatsapp import send_whatsapp_message
 from services.microsoft import update_excel_row, upload_photo_to_onedrive
 
@@ -447,13 +448,20 @@ def mark_processed(message_id: str) -> bool:
     conn.close()
     return inserted
 
+def unmark_processed(message_id: str):
+    conn = sqlite3.connect(settings.DB_URL)
+    c = conn.cursor()
+    c.execute("DELETE FROM processed WHERE message_id = ?", (message_id,))
+    conn.commit()
+    conn.close()
+
 def download_whatsapp_media(media_url: str) -> bytes:
     headers = {"X-Api-Key": settings.WAHA_API_KEY}
     resp = requests.get(media_url, headers=headers, timeout=30)
     resp.raise_for_status()
     return resp.content
 
-def handle_whatsapp_command(sender_phone, command, session):
+def handle_whatsapp_command(reply_chat_id, command, session):
     try:
         now = datetime.datetime.now()
         months_id = ["Januari", "Februari", "Maret", "April", "Mei", "Juni", "Juli", "Agustus", "September", "Oktober", "November", "Desember"]
@@ -569,46 +577,35 @@ def handle_whatsapp_command(sender_phone, command, session):
             
         msg = f"📊 *Live Rekap VISTA* 📊\n\nPeriode: *{period_name}*\nTotal Keseluruhan: *{total_count}* Kode SLA unik telah diperbarui.\n\nRincian per Kategori:\n{cat_text}"
         
-        send_whatsapp_message(sender_phone, msg, session)
+        send_whatsapp_message(reply_chat_id, msg, session)
     except Exception as e:
         print(f"Error handling whatsapp command: {e}")
 
 def process_message(message: dict):
-    sender_phone = message.get("from", "").replace("@c.us", "")
+    sender_chat_id = str(message.get("from", "") or "")
+    sender_label = sender_chat_id.replace("@c.us", "").replace("@lid", "")
+    reply_chat_id = resolve_reply_chat_id(message) or sender_chat_id
     msg_type = message.get("type") or message.get("_data", {}).get("type")
     session = message.get("_session", "default")
     
     # ANTI-BAN: Skip ALL status@broadcast messages (WhatsApp Stories).
     # These are irrelevant to SLA processing and flood the bot after reconnecting.
-    if "status@broadcast" in sender_phone or "status@broadcast" in message.get("from", ""):
+    if "status@broadcast" in sender_label or "status@broadcast" in sender_chat_id:
         return
     
     # ANTI-BAN: Skip messages during the grace period after login
     if session_ready_at > 0 and (time.time() - session_ready_at) < 60:
-        print(f"GRACE PERIOD: Skipping message from {sender_phone} (settling after login)")
+        print(f"GRACE PERIOD: Skipping message from {sender_label or sender_chat_id} (settling after login)")
         return
     
     print(f"\n--- New WAHA Message Received ---")
-    print(f"Sender: {sender_phone} | hasMedia: {message.get('hasMedia')}")
+    print(f"Sender: {sender_chat_id or sender_label} | hasMedia: {message.get('hasMedia')}")
     
-    raw_id = message.get("id")
-    if isinstance(raw_id, dict):
-        message_id = raw_id.get("_serialized") or raw_id.get("id")
-    else:
-        message_id = raw_id
-        
-    if not message_id:
-        # Fallback if id is missing but _data has it (common in some WPP/WEBJS versions)
-        _data = message.get("_data", {})
-        _data_id = _data.get("id")
-        if isinstance(_data_id, dict):
-            message_id = _data_id.get("_serialized") or _data_id.get("id")
-        else:
-            message_id = _data_id
-            
-    if not message_id:
-        print("WARNING: Could not extract message ID from webhook payload. Using timestamp as fallback for dedup.")
-        message_id = f"fallback_{message.get('timestamp', time.time())}_{sender_phone}"
+    message_id = extract_message_id(message)
+    processing_key = message_id
+    if not processing_key:
+        print("WARNING: Could not extract WAHA message ID from webhook payload. Using fallback key for dedup only.")
+        processing_key = f"fallback_{message.get('timestamp', time.time())}_{sender_label or sender_chat_id}"
         
     body = message.get("body", "")
     
@@ -617,32 +614,30 @@ def process_message(message: dict):
         text_lower = body.strip().lower()
         # FIX #4: Use startswith so custom ranges like "/rekap 6 juli" are also captured
         if text_lower.startswith("/rekap"):
-            if not mark_processed(message_id):
+            if not mark_processed(processing_key):
                 return
-            handle_whatsapp_command(sender_phone, text_lower, session)
+            handle_whatsapp_command(reply_chat_id, text_lower, session)
             return
     
     # ATOMIC RACE-CONDITION LOCK: Immediately insert into DB.
     # If it's already there (rowcount == 0), another thread/webhook is already processing it!
-    if not mark_processed(message_id):
-        print(f"Skipping duplicate message {message_id}...")
+    if not mark_processed(processing_key):
+        print(f"Skipping duplicate message {processing_key}...")
         return
         
     if message.get("hasMedia"):
         caption = message.get("body", "")
         
         # Hard filter to avoid consuming LLM API unnecessarily
-        # Pattern checks for "Kode: " followed by ddmmyy, valid sheet code, and 3 digits
-        kode_match = re.search(r"Kode\s*:\s*(\d{6}(?:PV|DR|FE|GR|SG|LC|RM|CA|WR)\d{3})", caption, re.IGNORECASE)
-        if not kode_match:
+        detected_kode = extract_kode_from_text(caption)
+        if not detected_kode:
             # If they clearly attempted to submit an SLA but failed the regex format
             if "kode" in caption.lower():
-                send_whatsapp_message(sender_phone, "⚠️ *Update Ditolak*\nFormat Kode tidak valid atau tidak dikenali oleh sistem. Harap pastikan format kode SLA benar (contoh: *Kode: 240523PV001*).", session)
-            print(f"Skipping message {message_id}: Caption does not contain a valid SLA code format.")
+                send_whatsapp_message(reply_chat_id, "⚠️ *Update Ditolak*\nFormat Kode tidak valid atau tidak dikenali oleh sistem. Harap pastikan format kode SLA benar (contoh: *Kode: 240523PV001*).", session)
+            print(f"Skipping message {processing_key}: Caption does not contain a valid SLA code format.")
             return
-        detected_kode = kode_match.group(1)
         
-        print(f"Message ID: {message_id} | Caption: {caption}")
+        print(f"Message ID: {message_id or '[missing]'} | Caption: {caption}")
         
         timestamp_unix = message.get("timestamp", "")
         msg_datetime_str = ""
@@ -657,6 +652,8 @@ def process_message(message: dict):
             if not media_url:
                 # WPP engine does not provide media.url in the webhook payload.
                 # We must use the WAHA standard download API endpoint.
+                if not message_id:
+                    raise Exception("WAHA webhook did not provide a usable message ID, so the photo cannot be downloaded. Please resend the photo.")
                 internal_media_url = f"{settings.WAHA_URL}/api/{session}/messages/{message_id}/download"
             else:
                 # WAHA may return localhost in the payload, but we are inside Docker
@@ -705,7 +702,7 @@ def process_message(message: dict):
                 )
                 
                 print("✅ Success!")
-                send_whatsapp_message(sender_phone, f"✅ Update SLA berhasil!\nKode: {payload.kode}", session)
+                send_whatsapp_message(reply_chat_id, f"✅ Update SLA berhasil!\nKode: {payload.kode}", session)
                 
                 # Log successful update into daily_updates tracking
                 try:
@@ -719,8 +716,9 @@ def process_message(message: dict):
                     print(f"Error logging daily update: {log_err}")
             else:
                 print(f"⚠️ Ignored non-SLA image or failed to extract data: {err}")
-                send_whatsapp_message(sender_phone, f"⚠️ Ekstraksi data gagal untuk Kode *{detected_kode}*: {err}\nPastikan format teks dan gambar sudah sesuai.", session)
+                send_whatsapp_message(reply_chat_id, f"⚠️ Ekstraksi data gagal untuk Kode *{detected_kode}*: {err}\nPastikan format teks dan gambar sudah sesuai.", session)
         except Exception as process_err:
+            unmark_processed(processing_key)
             import traceback
             err_trace = traceback.format_exc()
             err_str = str(process_err)
@@ -736,15 +734,15 @@ def process_message(message: dict):
             else:
                 reply_msg = f"⚠️ *Kendala Teknis*\nTerjadi error sistem saat memproses Kode *{detected_kode}*. Mohon coba lagi atau lapor ke IT.\n\n_Pesan Error: {err_str[:100]}..._"
                 
-            send_whatsapp_message(sender_phone, reply_msg, session)
+            send_whatsapp_message(reply_chat_id, reply_msg, session)
     else:
         # No media attached
         body = message.get("body", "")
-        kode_match = re.search(r"Kode\s*:\s*(\d{6}(?:PV|DR|FE|GR|SG|LC|RM|CA|WR)\d{3})", body, re.IGNORECASE)
-        if kode_match:
-            send_whatsapp_message(sender_phone, f"⚠️ *Update Gagal untuk {kode_match.group(1)}*\nAnda mengirimkan teks tanpa foto. Harap kirimkan foto dokumentasi dengan caption kode tersebut.", session)
+        detected_kode = extract_kode_from_text(body)
+        if detected_kode:
+            send_whatsapp_message(reply_chat_id, f"⚠️ *Update Gagal untuk {detected_kode}*\nAnda mengirimkan teks tanpa foto. Harap kirimkan foto dokumentasi dengan caption kode tersebut.", session)
         elif "kode:" in body.lower() or "kode :" in body.lower():
-            send_whatsapp_message(sender_phone, "⚠️ *Update Gagal*\nHarap kirimkan *foto dokumentasi* beserta caption dengan format Kode yang benar (contoh: *Kode: 240523PV001*).", session)
+            send_whatsapp_message(reply_chat_id, "⚠️ *Update Gagal*\nHarap kirimkan *foto dokumentasi* beserta caption dengan format Kode yang benar (contoh: *Kode: 240523PV001*).", session)
 
 @app.get("/")
 def read_root():

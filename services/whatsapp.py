@@ -4,6 +4,7 @@ import requests
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 from config import settings
+from services.message_utils import normalize_chat_id
 
 # WAHA_URL is now dynamic via settings.WAHA_URL
 
@@ -16,8 +17,10 @@ def send_whatsapp_message(to_phone: str, message: str, session: str = "default")
     """
     Sends a text message using the local WAHA Docker container with human-like typing simulation.
     """
-    # WAHA requires chat IDs to end in @c.us for regular contacts
-    chat_id = to_phone if "@" in to_phone else f"{to_phone}@c.us"
+    chat_id = normalize_chat_id(to_phone)
+    if not chat_id:
+        print("Warning: Refusing to send WAHA message because chat ID is empty.")
+        return None
     
     headers = {
         "Accept": "application/json",
