@@ -87,25 +87,17 @@ def extract_message_id(message: dict) -> str | None:
 
 
 def resolve_reply_chat_id(message: dict) -> str:
+    # WPP fully supports sending to @lid addresses.
+    # Just return the direct sender or the group chat ID.
     direct_from = normalize_chat_id(_clean_string(message.get("from")))
-    if direct_from and not direct_from.endswith("@lid"):
+    if direct_from:
         return direct_from
-
-    raw_data = message.get("_data") if isinstance(message.get("_data"), dict) else {}
-    info = raw_data.get("Info") if isinstance(raw_data.get("Info"), dict) else {}
-
-    for candidate in (
-        info.get("Chat"),
-        info.get("Sender"),
-        message.get("chatId"),
-        message.get("author"),
-        message.get("to"),
-    ):
-        normalized = normalize_chat_id(_clean_string(candidate))
-        if normalized and not normalized.endswith("@lid"):
-            return normalized
-
-    return direct_from
+        
+    chat_id = normalize_chat_id(_clean_string(message.get("chatId")))
+    if chat_id:
+        return chat_id
+        
+    return ""
 
 
 def extract_kode_from_text(text: str) -> str | None:
