@@ -591,7 +591,25 @@ def process_message(message: dict):
     print(f"\n--- New WAHA Message Received ---")
     print(f"Sender: {sender_phone} | hasMedia: {message.get('hasMedia')}")
     
-    message_id = message["id"]
+    raw_id = message.get("id")
+    if isinstance(raw_id, dict):
+        message_id = raw_id.get("_serialized") or raw_id.get("id")
+    else:
+        message_id = raw_id
+        
+    if not message_id:
+        # Fallback if id is missing but _data has it (common in some WPP/WEBJS versions)
+        _data = message.get("_data", {})
+        _data_id = _data.get("id")
+        if isinstance(_data_id, dict):
+            message_id = _data_id.get("_serialized") or _data_id.get("id")
+        else:
+            message_id = _data_id
+            
+    if not message_id:
+        print("WARNING: Could not extract message ID from webhook payload. Using timestamp as fallback for dedup.")
+        message_id = f"fallback_{message.get('timestamp', time.time())}_{sender_phone}"
+        
     body = message.get("body", "")
     
     # Intercept WhatsApp Commands
