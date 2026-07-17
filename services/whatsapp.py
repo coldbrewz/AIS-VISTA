@@ -10,7 +10,8 @@ from services.message_utils import normalize_chat_id
 
 # Setup robust session for WAHA API calls to prevent silent message drops
 req_session = requests.Session()
-retries = Retry(total=3, backoff_factor=1, status_forcelist=[408, 429, 500, 502, 503, 504])
+# FIX: Do not retry 500 errors. The WPP EKEYTYPE bug causes a persistent 500 after successfully sending.
+retries = Retry(total=3, backoff_factor=1, status_forcelist=[408, 429, 502, 503, 504])
 req_session.mount("http://", HTTPAdapter(max_retries=retries))
 
 def send_whatsapp_message(to_phone: str, message: str, session: str = "default"):
@@ -61,7 +62,11 @@ def send_whatsapp_message(to_phone: str, message: str, session: str = "default")
         response.raise_for_status()
         return response.json()
     except requests.exceptions.RequestException as e:
+        if getattr(e, "response", None) is not None and e.response.status_code == 500 and "EKEYTYPE" in e.response.text:
+            # WPP engine EKEYTYPE bug false positive. Message sent successfully.
+            return None
+            
         print(f"Error sending WAHA message: {e}")
-        if e.response is not None:
+        if getattr(e, "response", None) is not None:
             print(f"Response: {e.response.text}")
         return None

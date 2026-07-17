@@ -203,9 +203,21 @@ def update_excel_row(share_url: str, sheet_name: str, kode: str, tanggal: str, l
         doc_url = f"https://graph.microsoft.com/v1.0/drives/{drive_id}/items/{item_id}/workbook/worksheets/{sheet_name}/range(address='{col_link}{actual_excel_row}')"
         
         def safe_patch(url, val, name):
-            resp = session.patch(url, headers=headers, json={"values": [[val]]})
-            if not resp.ok:
-                raise Exception(f"Microsoft Graph rejected update for {name} ({val}) at {url}. Status {resp.status_code}: {resp.text}")
+            import time
+            for attempt in range(3):
+                try:
+                    resp = session.patch(url, headers=headers, json={"values": [[val]]}, timeout=15)
+                    if resp.ok:
+                        return
+                    if resp.status_code in (429, 500, 502, 503, 504):
+                        time.sleep(2 ** attempt)
+                        continue
+                    raise Exception(f"Microsoft Graph rejected update for {name} ({val}) at {url}. Status {resp.status_code}: {resp.text}")
+                except Exception as e:
+                    if attempt == 2:
+                        raise Exception(f"Network error on Microsoft Graph API for {name}: {e}")
+                    time.sleep(2 ** attempt)
+            raise Exception(f"Failed to update {name} after 3 network retries.")
                 
         safe_patch(t_url, tanggal, "Tanggal")
         safe_patch(doc_url, link, "Link")
