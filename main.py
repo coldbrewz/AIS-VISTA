@@ -604,7 +604,6 @@ def process_message(message: dict):
     message_id = extract_message_id(message)
     processing_key = message_id
     if not processing_key:
-        print(f"RAW WEBHOOK PAYLOAD (Missing ID): {message}")
         print("WARNING: Could not extract WAHA message ID from webhook payload. Using fallback key for dedup only.")
         processing_key = f"fallback_{message.get('timestamp', time.time())}_{sender_label or sender_chat_id}"
         
