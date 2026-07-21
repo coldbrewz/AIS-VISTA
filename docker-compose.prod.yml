@@ -14,18 +14,24 @@ services:
       # Use container name so this works both locally and on VPS without needing an external network
       - WHATSAPP_HOOK_URL=http://vistabot:5001/webhook
       - WHATSAPP_HOOK_EVENTS=message
-      - WHATSAPP_DEFAULT_ENGINE=WPP
+      # GOWS Engine: Ultra-lightweight Go-based engine, no Chrome needed
+      - WHATSAPP_DEFAULT_ENGINE=GOWS
       # ANTI-BAN: Tell WAHA to completely ignore Status broadcasts and Channels.
       # Without this, reconnecting after hours offline dumps 30-100+ status messages
       # into our webhook, overloading WAHA and triggering WhatsApp's anti-bot detection.
       - WHATSAPP_IGNORE_STATUS=true
       - WHATSAPP_IGNORE_CHANNELS=true
+      # GOWS: Minimal history sync to reduce bandwidth and ban risk on datacenter IPs
+      - WAHA_GOWS_DEVICE_REQUIRE_FULL_SYNC=false
+      - WAHA_GOWS_DEVICE_HISTORY_SYNC_FULL_SYNC_DAYS_LIMIT=1
+      - WAHA_GOWS_DEVICE_HISTORY_SYNC_RECENT_SYNC_DAYS_LIMIT=1
+      - WAHA_GOWS_DEVICE_HISTORY_SYNC_INITIAL_SYNC_MAX_MESSAGES_PER_CHAT=10
+      - WAHA_GOWS_DEVICE_HISTORY_SYNC_FULL_SYNC_SIZE_MB_LIMIT=64
+      - WAHA_GOWS_DEVICE_HISTORY_SYNC_STORAGE_QUOTA_MB=128
     volumes:
       - ./waha_sessions:/app/.sessions
-    # WPP runs a full Chromium browser. 1g should be enough since it rarely exceeds 800MB.
-    mem_limit: 1.5g
-    # WPP/Chromium requires shared memory. Default 64MB is too small and causes Chrome crashes.
-    shm_size: 512m
+    # GOWS is ultra-lightweight (~30MB RAM), no Chrome/Chromium needed
+    mem_limit: 256m
     depends_on:
       - vista_bot
     networks:

@@ -1,49 +1,37 @@
+# Local GOWS testing: Only runs WAHA container. Python bot runs natively.
+# Usage: docker compose -f docker-compose.local.yml up -d
+#        Then run: python main.py
 services:
   waha:
     image: devlikeapro/waha
-    container_name: waha
+    container_name: waha_local
     restart: unless-stopped
     ports:
       - "3000:3000"
     environment:
+      # Dashboard
       - WAHA_DASHBOARD_USERNAME=${WAHA_DASHBOARD_USERNAME:-admin}
       - WAHA_DASHBOARD_PASSWORD=${WAHA_DASHBOARD_PASSWORD:-admin123}
       - WHATSAPP_SWAGGER_USERNAME=${WAHA_DASHBOARD_USERNAME:-admin}
       - WHATSAPP_SWAGGER_PASSWORD=${WAHA_DASHBOARD_PASSWORD:-admin123}
+      # API Key
       - WAHA_API_KEY=${WAHA_API_KEY}
-      - WHATSAPP_HOOK_URL=http://vistabot:5001/webhook
+      # Webhook → points to host machine where Python runs natively
+      - WHATSAPP_HOOK_URL=http://host.docker.internal:5001/webhook
       - WHATSAPP_HOOK_EVENTS=message
-      - WHATSAPP_DEFAULT_ENGINE=WPP
+      # GOWS Engine
+      - WHATSAPP_DEFAULT_ENGINE=GOWS
+      # ANTI-BAN: Ignore status broadcasts and channels
+      - WHATSAPP_IGNORE_STATUS=true
+      - WHATSAPP_IGNORE_CHANNELS=true
+      # GOWS: Minimal history sync to reduce bandwidth and ban risk
+      - WAHA_GOWS_DEVICE_REQUIRE_FULL_SYNC=false
+      - WAHA_GOWS_DEVICE_HISTORY_SYNC_FULL_SYNC_DAYS_LIMIT=1
+      - WAHA_GOWS_DEVICE_HISTORY_SYNC_RECENT_SYNC_DAYS_LIMIT=1
+      - WAHA_GOWS_DEVICE_HISTORY_SYNC_INITIAL_SYNC_MAX_MESSAGES_PER_CHAT=10
+      - WAHA_GOWS_DEVICE_HISTORY_SYNC_FULL_SYNC_SIZE_MB_LIMIT=64
+      - WAHA_GOWS_DEVICE_HISTORY_SYNC_STORAGE_QUOTA_MB=128
     volumes:
-      - ./waha_sessions:/app/.sessions
-    mem_limit: 2.5g
-    shm_size: 512m
-    depends_on:
-      - vista_bot
-    networks:
-      - vista-network
-
-  vista_bot:
-    build: .
-    container_name: vista_bot
-    restart: unless-stopped
-    ports:
-      - "5001:5001"
-    environment:
-      - TZ=Asia/Jakarta
-      - WAHA_URL=http://waha:3000
-    volumes:
-      - ./processed_messages.db:/app/processed_messages.db
-      - ./.env:/app/.env
-      - ./token_cache.bin:/app/token_cache.bin
-      - /var/run/docker.sock:/var/run/docker.sock
-    mem_limit: 512m
-    networks:
-      vista-network:
-        aliases:
-          - vistabot
-
-networks:
-  vista-network:
-    driver: bridge
-
+      - ./waha_sessions_gows:/app/.sessions
+    # GOWS is ultra-lightweight, no Chrome needed
+    mem_limit: 256m
