@@ -37,6 +37,28 @@ def get_retry_session():
 def get_ms_token():
     cache = msal.SerializableTokenCache()
     token_cache_path = os.environ.get("TOKEN_CACHE_PATH", "token_cache.bin")
+    
+    # Auto-seed from environment variable (ideal for Railway to keep tokens secure and out of git)
+    env_cache_data = os.environ.get("MICROSOFT_TOKEN_CACHE_DATA")
+    if not os.path.exists(token_cache_path) and env_cache_data:
+        print(f"INIT: Seeding Microsoft token cache from environment variable to: {token_cache_path}")
+        try:
+            os.makedirs(os.path.dirname(token_cache_path), exist_ok=True)
+            with open(token_cache_path, "w") as f:
+                f.write(env_cache_data.strip())
+        except Exception as e:
+            print(f"INIT: Failed to write token cache from env: {e}")
+            
+    # Auto-seed fallback from repository root (if committed)
+    elif not os.path.exists(token_cache_path) and os.path.exists("token_cache.bin") and token_cache_path != "token_cache.bin":
+        print(f"INIT: Seeding Microsoft token cache from repository root to volume: {token_cache_path}")
+        import shutil
+        try:
+            os.makedirs(os.path.dirname(token_cache_path), exist_ok=True)
+            shutil.copy("token_cache.bin", token_cache_path)
+        except Exception as e:
+            print(f"INIT: Failed to copy token cache: {e}")
+
     if os.path.exists(token_cache_path):
         with open(token_cache_path, "r") as f:
             cache.deserialize(f.read())
