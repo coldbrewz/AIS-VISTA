@@ -36,8 +36,9 @@ def get_retry_session():
 
 def get_ms_token():
     cache = msal.SerializableTokenCache()
-    if os.path.exists("token_cache.bin"):
-        with open("token_cache.bin", "r") as f:
+    token_cache_path = os.environ.get("TOKEN_CACHE_PATH", "token_cache.bin")
+    if os.path.exists(token_cache_path):
+        with open(token_cache_path, "r") as f:
             cache.deserialize(f.read())
     app = msal.PublicClientApplication(
         settings.MICROSOFT_CLIENT_ID, 
@@ -50,7 +51,7 @@ def get_ms_token():
         # FIX #5: Save the refreshed token cache back to disk immediately
         # Without this, MSAL refresh tokens eventually expire and auth breaks permanently
         if cache.has_state_changed:
-            with open("token_cache.bin", "w") as f:
+            with open(token_cache_path, "w") as f:
                 f.write(cache.serialize())
         if result and "access_token" in result:
             return result["access_token"]
