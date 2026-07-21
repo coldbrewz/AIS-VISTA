@@ -272,7 +272,13 @@ async def waha_watchdog():
                 timeout=5
             )
             data = resp.json()
-            if data and isinstance(data, list):
+            if isinstance(data, list):
+                if not data:
+                    print("WATCHDOG: No active sessions found in WAHA. Re-initializing default session...")
+                    asyncio.create_task(init_waha_session())
+                    consecutive_failures = 0
+                    await asyncio.sleep(10)
+                    continue
                 status = data[0].get("status")
                 
                 # Send QR code email if WAHA logs out
