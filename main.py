@@ -593,10 +593,22 @@ def process_message(message: dict):
     if "status@broadcast" in sender_label or "status@broadcast" in sender_chat_id:
         return
     
+    
     # ANTI-BAN: Skip messages during the grace period after login
     if session_ready_at > 0 and (time.time() - session_ready_at) < 60:
-        print(f"GRACE PERIOD: Skipping message from {sender_label or sender_chat_id} (settling after login)")
         return
+    
+    # ANTI-BAN: For group messages, do an early SLA-relevance check BEFORE any logging,
+    # ID extraction, or DB writes. This prevents 8+ irrelevant group photos from
+    # flooding the logs and generating unnecessary WAHA API calls.
+    is_group = "@g.us" in sender_chat_id
+    body = message.get("body", "")
+    if is_group:
+        # Only process group messages that have media with a valid SLA code, or /rekap commands
+        is_rekap = isinstance(body, str) and body.strip().lower().startswith("/rekap")
+        has_sla_code = message.get("hasMedia") and extract_kode_from_text(body)
+        if not is_rekap and not has_sla_code:
+            return  # Silently drop irrelevant group messages
     
     print(f"\n--- New WAHA Message Received ---")
     print(f"Sender: {sender_chat_id or sender_label} | hasMedia: {message.get('hasMedia')}")
@@ -607,7 +619,6 @@ def process_message(message: dict):
         print("WARNING: Could not extract WAHA message ID from webhook payload. Using fallback key for dedup only.")
         processing_key = f"fallback_{message.get('timestamp', time.time())}_{sender_label or sender_chat_id}"
         
-    body = message.get("body", "")
     
     # Intercept WhatsApp Commands
     if body and isinstance(body, str):

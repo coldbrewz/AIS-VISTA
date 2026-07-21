@@ -30,24 +30,27 @@ def send_whatsapp_message(to_phone: str, message: str, session: str = "default")
     }
     
     # --- ANTI-BAN SIMULATION ---
-    try:
-        # 1. Send Seen (read receipt)
-        req_session.post(f"{settings.WAHA_URL}/api/sendSeen", json={"chatId": chat_id, "session": session}, headers=headers, timeout=5)
-        
-        # 2. Start Typing
-        req_session.post(f"{settings.WAHA_URL}/api/startTyping", json={"chatId": chat_id, "session": session}, headers=headers, timeout=5)
-        
-        # FIX #8: Cap delay at 3s (was up to 7s) to prevent thread pool exhaustion during
-        # burst message bursts. FastAPI default thread pool is 40 threads.
-        # If 40 messages all sleep 7s, no new webhooks can be processed.
-        delay = min(max(len(message) * 0.05, 1.5), 3.0)
-        jitter = random.uniform(0.0, 0.5)
-        time.sleep(delay + jitter)
-        
-        # 4. Stop Typing
-        req_session.post(f"{settings.WAHA_URL}/api/stopTyping", json={"chatId": chat_id, "session": session}, headers=headers, timeout=5)
-    except Exception as e:
-        print(f"Warning: Failed during anti-ban simulation, proceeding to send: {e}")
+    # Skip typing simulation for group chats — it's suspicious bot behavior
+    # and generates 3 extra API calls per message that WhatsApp can flag.
+    is_group = "@g.us" in chat_id
+    if not is_group:
+        try:
+            # 1. Send Seen (read receipt)
+            req_session.post(f"{settings.WAHA_URL}/api/sendSeen", json={"chatId": chat_id, "session": session}, headers=headers, timeout=5)
+            
+            # 2. Start Typing
+            req_session.post(f"{settings.WAHA_URL}/api/startTyping", json={"chatId": chat_id, "session": session}, headers=headers, timeout=5)
+            
+            # FIX #8: Cap delay at 3s (was up to 7s) to prevent thread pool exhaustion during
+            # burst message bursts. FastAPI default thread pool is 40 threads.
+            delay = min(max(len(message) * 0.05, 1.5), 3.0)
+            jitter = random.uniform(0.0, 0.5)
+            time.sleep(delay + jitter)
+            
+            # 4. Stop Typing
+            req_session.post(f"{settings.WAHA_URL}/api/stopTyping", json={"chatId": chat_id, "session": session}, headers=headers, timeout=5)
+        except Exception as e:
+            print(f"Warning: Failed during anti-ban simulation, proceeding to send: {e}")
     # ---------------------------
     
     url = f"{settings.WAHA_URL}/api/sendText"
