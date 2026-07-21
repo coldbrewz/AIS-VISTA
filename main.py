@@ -65,8 +65,31 @@ is_updating = False
 # triggering WhatsApp anti-bot detection from burst activity
 session_ready_at = 0  # timestamp when session became WORKING
 
+_has_docker_cache = None
+
+def has_docker() -> bool:
+    global _has_docker_cache
+    if _has_docker_cache is not None:
+        return _has_docker_cache
+    
+    import shutil
+    if not shutil.which("docker"):
+        _has_docker_cache = False
+        return False
+        
+    try:
+        res = subprocess.run(["docker", "info"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=2)
+        _has_docker_cache = (res.returncode == 0)
+    except Exception:
+        _has_docker_cache = False
+        
+    return _has_docker_cache
+
 async def auto_update_waha():
     global is_updating
+    if not has_docker():
+        print("AUTO-UPDATE: Docker daemon not available. Skipping auto-update service.")
+        return
     while True:
         now = datetime.datetime.now()
         target = now.replace(hour=8, minute=5, second=0, microsecond=0)
@@ -280,7 +303,7 @@ async def waha_watchdog():
                 # Check docker logs specifically for the known web.js crash 
                 # since presence='offline' is natively true when the main phone is dead
                 is_crashed = False
-                if status == "WORKING":
+                if status == "WORKING" and has_docker():
                     try:
                         logs_out = await asyncio.to_thread(subprocess.run, ["docker", "logs", "--tail", "20", "waha"], capture_output=True, text=True, check=False)
                         if "reading 'getContact'" in logs_out.stderr or "reading 'getContact'" in logs_out.stdout:
@@ -334,6 +357,12 @@ async def waha_watchdog():
             
         if consecutive_failures >= 3:
             restart_count += 1
+            if not has_docker():
+                print("WATCHDOG: WAHA is offline, but Docker daemon is not available. Skipping container restart (normal for Railway/Serverless environments).")
+                consecutive_failures = 0
+                await asyncio.sleep(30)
+                continue
+                
             if restart_count <= MAX_RESTARTS_BEFORE_BACKOFF:
                 print(f"WATCHDOG: WAHA stuck. Restarting Docker container (attempt {restart_count}/{MAX_RESTARTS_BEFORE_BACKOFF})...")
                 try:
