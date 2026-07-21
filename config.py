@@ -26,4 +26,10 @@ class Settings(BaseSettings):
 
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
 
+    def model_post_init(self, __context):
+        # Auto-prepend http:// if scheme is missing (prevents MissingSchema error in requests)
+        url = self.WAHA_URL.strip() if self.WAHA_URL else ""
+        if url and not url.startswith(("http://", "https://")):
+            self.WAHA_URL = f"http://{url}"
+
 settings = Settings()
