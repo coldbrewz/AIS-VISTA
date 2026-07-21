@@ -38,10 +38,21 @@ def get_ms_token():
     cache = msal.SerializableTokenCache()
     token_cache_path = os.environ.get("TOKEN_CACHE_PATH", "token_cache.bin")
     
-    # Auto-seed from environment variable (ideal for Railway to keep tokens secure and out of git)
+    # Check if the existing token cache file is valid
+    existing_valid = False
+    if os.path.exists(token_cache_path):
+        try:
+            with open(token_cache_path, "r") as f:
+                content = f.read().strip()
+                if content and content.startswith("{") and "RefreshToken" in content:
+                    existing_valid = True
+        except Exception:
+            existing_valid = False
+
+    # Auto-seed from environment variable if missing, empty, or corrupted
     env_cache_data = os.environ.get("MICROSOFT_TOKEN_CACHE_DATA")
-    if not os.path.exists(token_cache_path) and env_cache_data:
-        print(f"INIT: Seeding Microsoft token cache from environment variable to: {token_cache_path}")
+    if not existing_valid and env_cache_data:
+        print(f"INIT: Seeding/Fixing Microsoft token cache from environment variable to: {token_cache_path}")
         try:
             os.makedirs(os.path.dirname(token_cache_path), exist_ok=True)
             with open(token_cache_path, "w") as f:
@@ -49,7 +60,7 @@ def get_ms_token():
         except Exception as e:
             print(f"INIT: Failed to write token cache from env: {e}")
             
-    # Auto-seed fallback from repository root (if committed)
+    # Auto-seed fallback from repository root (if committed and volume file is missing)
     elif not os.path.exists(token_cache_path) and os.path.exists("token_cache.bin") and token_cache_path != "token_cache.bin":
         print(f"INIT: Seeding Microsoft token cache from repository root to volume: {token_cache_path}")
         import shutil
@@ -59,9 +70,13 @@ def get_ms_token():
         except Exception as e:
             print(f"INIT: Failed to copy token cache: {e}")
 
+    # Read the cache (whether newly seeded or existing)
     if os.path.exists(token_cache_path):
-        with open(token_cache_path, "r") as f:
-            cache.deserialize(f.read())
+        try:
+            with open(token_cache_path, "r") as f:
+                cache.deserialize(f.read())
+        except Exception as e:
+            print(f"ERROR: Failed to deserialize token cache: {e}")
     app = msal.PublicClientApplication(
         settings.MICROSOFT_CLIENT_ID, 
         authority="https://login.microsoftonline.com/common", 
