@@ -44,7 +44,7 @@ If you want to swap the number associated with the bot:
 * **The Fix:** Force delete the containers first before restarting:
   ```bash
   cd ~/AIS-VISTA
-  docker rm -f waha vista_bot
+  docker rm -f $(docker ps -aq --filter name=waha) $(docker ps -aq --filter name=vista_bot)
   docker-compose -f docker-compose.prod.yml up -d
   ```
 
@@ -72,7 +72,7 @@ cd AIS-VISTA
 ### Pulling Updates & Rebuilding Code
 ```bash
 git pull
-docker rm -f waha vista_bot
+docker rm -f $(docker ps -aq --filter name=waha) $(docker ps -aq --filter name=vista_bot)
 docker-compose -f docker-compose.prod.yml up -d --build
 ```
 
