@@ -43,6 +43,8 @@ services:
     build: .
     container_name: vista_bot
     restart: unless-stopped
+    ports:
+      - "5001:5001"
     environment:
       - TZ=Asia/Jakarta
       - WAHA_URL=http://waha:3000
