@@ -972,6 +972,250 @@ def read_root(request: Request):
                     </div>
                     <a href="{settings.EXCEL_SHARE_LINK}" target="_blank" class="btn excel-btn">Buka Excel Online</a>
                 </div>
+
+                <!-- Card 4: FAQ & Docs -->
+                <div class="card">
+                    <div>
+                        <div class="card-title">Panduan &amp; FAQ</div>
+                        <p class="card-desc">Buka dokumentasi lengkap cara ganti nomor WA, troubleshooting error SQLite/Docker, dan daftar perintah penting.</p>
+                    </div>
+                    <a href="http://{ip_only}:5001/guide" target="_blank" class="btn btn-secondary" style="background: linear-gradient(to right, #7c3aed, #8b5cf6);">Buka Panduan</a>
+                </div>
+            </div>
+
+            <footer>
+                <p>&copy; 2026 Project AIS-VISTA. Running on Oracle Ampere VPS (ARM64).</p>
+            </footer>
+        </div>
+    </body>
+    </html>
+    """
+    return HTMLResponse(content=html_content)
+
+@app.get("/guide", response_class=HTMLResponse)
+def get_guide():
+    html_content = """
+    <!DOCTYPE html>
+    <html lang="id">
+    <head>
+        <meta charset="UTF-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <title>VISTA Bot Guide &amp; FAQ</title>
+        <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@300;400;600;700&display=swap" rel="stylesheet">
+        <style>
+            * {
+                box-sizing: border-box;
+                margin: 0;
+                padding: 0;
+            }
+            body {
+                font-family: 'Plus Jakarta Sans', sans-serif;
+                background: linear-gradient(135deg, #0f172a 0%, #1e1b4b 100%);
+                color: #f8fafc;
+                min-height: 100vh;
+                padding: 40px 20px;
+                display: flex;
+                flex-direction: column;
+                align-items: center;
+            }
+            .container {
+                width: 100%;
+                max-width: 900px;
+                background: rgba(30, 41, 59, 0.5);
+                backdrop-filter: blur(16px);
+                border: 1px solid rgba(255, 255, 255, 0.08);
+                border-radius: 24px;
+                padding: 40px;
+                box-shadow: 0 20px 40px rgba(0, 0, 0, 0.3);
+            }
+            header {
+                margin-bottom: 35px;
+                border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+                padding-bottom: 25px;
+            }
+            .back-btn {
+                display: inline-flex;
+                align-items: center;
+                color: #38bdf8;
+                text-decoration: none;
+                font-weight: 600;
+                font-size: 0.95rem;
+                margin-bottom: 20px;
+                transition: opacity 0.2s ease;
+            }
+            .back-btn:hover {
+                opacity: 0.8;
+            }
+            h1 {
+                font-size: 2.3rem;
+                font-weight: 700;
+                background: linear-gradient(to right, #38bdf8, #818cf8);
+                -webkit-background-clip: text;
+                -webkit-text-fill-color: transparent;
+                margin-bottom: 8px;
+            }
+            .subtitle {
+                color: #94a3b8;
+                font-size: 1.05rem;
+            }
+            .section {
+                margin-bottom: 35px;
+            }
+            h2 {
+                font-size: 1.5rem;
+                font-weight: 600;
+                color: #e2e8f0;
+                margin-bottom: 15px;
+                display: flex;
+                align-items: center;
+                border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+                padding-bottom: 8px;
+            }
+            h3 {
+                font-size: 1.15rem;
+                font-weight: 600;
+                color: #f1f5f9;
+                margin: 20px 0 10px 0;
+            }
+            p {
+                color: #94a3b8;
+                font-size: 0.98rem;
+                line-height: 1.6;
+                margin-bottom: 12px;
+            }
+            ul, ol {
+                margin-left: 25px;
+                margin-bottom: 15px;
+                color: #94a3b8;
+                font-size: 0.98rem;
+                line-height: 1.6;
+            }
+            li {
+                margin-bottom: 8px;
+            }
+            code {
+                font-family: monospace;
+                background: rgba(15, 23, 42, 0.6);
+                color: #f43f5e;
+                padding: 2px 6px;
+                border-radius: 6px;
+                font-size: 0.9rem;
+                border: 1px solid rgba(255, 255, 255, 0.05);
+            }
+            pre {
+                background: rgba(15, 23, 42, 0.8);
+                border: 1px solid rgba(255, 255, 255, 0.06);
+                border-radius: 12px;
+                padding: 16px;
+                margin: 15px 0;
+                overflow-x: auto;
+            }
+            pre code {
+                background: none;
+                border: none;
+                color: #38bdf8;
+                padding: 0;
+                font-size: 0.9rem;
+            }
+            footer {
+                text-align: center;
+                color: #64748b;
+                font-size: 0.85rem;
+                margin-top: 30px;
+                border-top: 1px solid rgba(255, 255, 255, 0.08);
+                padding-top: 25px;
+            }
+            .note {
+                background: rgba(56, 189, 248, 0.05);
+                border-left: 4px solid #38bdf8;
+                padding: 15px;
+                border-radius: 4px 12px 12px 4px;
+                margin: 20px 0;
+            }
+            .note p {
+                margin-bottom: 0;
+                color: #e2e8f0;
+            }
+        </style>
+    </head>
+    <body>
+        <div class="container">
+            <header>
+                <a href="/" class="back-btn">&larr; Kembali ke Konsol Utama</a>
+                <h1>Panduan Penggunaan &amp; FAQ</h1>
+                <p class="subtitle">Bantuan operasional, perintah penting, dan panduan troubleshooting sistem VISTA.</p>
+            </header>
+
+            <!-- Section 1 -->
+            <div class="section">
+                <h2>📱 Operasional Akun WhatsApp</h2>
+                <h3>Cara Mengganti Nomor WhatsApp yang Terhubung</h3>
+                <p>Jika Anda ingin mengganti nomor WhatsApp bot dengan nomor baru, ikuti prosedur aman berikut:</p>
+                <ol>
+                    <li><strong>Log out nomor lama:</strong> Di HP lama Anda, buka WhatsApp &rarr; <strong>Perangkat Tertaut (Linked Devices)</strong> &rarr; Pilih sesi WAHA &rarr; Klik <strong>Keluar (Log out)</strong>. (Atau gunakan tombol Logout di WAHA Dashboard).</li>
+                    <li><strong>Stop containers di VPS:</strong> Masuk ke SSH server, masuk ke folder <code>AIS-VISTA</code>, dan matikan layanannya:
+                        <pre><code>docker-compose -f docker-compose.prod.yml down</code></pre>
+                    </li>
+                    <li><strong>Hapus file sesi lama:</strong> Hapus folder token lama untuk menghindari konflik data:
+                        <pre><code>rm -rf waha_sessions/*</code></pre>
+                    </li>
+                    <li><strong>Nyalakan kembali:</strong>
+                        <pre><code>docker-compose -f docker-compose.prod.yml up -d</code></pre>
+                    </li>
+                    <li><strong>Scan QR Code baru:</strong> Tunggu 10 detik agar engine GOWS inisialisasi, lalu buka Telegram bot Anda dan ketik <code>/qr</code>. Scan gambar QR yang dikirim bot menggunakan HP baru Anda.</li>
+                </ol>
+            </div>
+
+            <!-- Section 2 -->
+            <div class="section">
+                <h2>🛠️ Troubleshooting &amp; Solusi Error</h2>
+                
+                <h3>1. Error: <code>sqlite3.OperationalError: unable to open database file</code></h3>
+                <p><strong>Penyebab:</strong> Docker secara otomatis membuat <code>processed_messages.db</code> sebagai folder kosong karena filenya belum ada di VPS saat pertama kali dijalankan.</p>
+                <p><strong>Solusi:</strong> Hapus folder palsu tersebut dan buat sebagai file kosong:</p>
+                <pre><code>docker-compose -f docker-compose.prod.yml down
+rm -rf processed_messages.db
+touch processed_messages.db
+docker-compose -f docker-compose.prod.yml up -d</code></pre>
+
+                <h3>2. Error: <code>KeyError: 'ContainerConfig'</code></h3>
+                <p><strong>Penyebab:</strong> Program <code>docker-compose</code> versi lama mengalami bug saat mencoba menimpa container yang sedang berjalan.</p>
+                <p><strong>Solusi:</strong> Hapus container yang lama terlebih dahulu secara manual, baru nyalakan kembali:</p>
+                <pre><code>docker rm -f waha vista_bot
+docker-compose -f docker-compose.prod.yml up -d</code></pre>
+
+                <h3>3. Error: <code>Unprotected Private Key File / Bad permissions</code></h3>
+                <p><strong>Penyebab:</strong> SSH client di Windows mendeteksi file key <code>.key</code> Anda dapat diakses oleh akun user Windows lain dan menolak untuk membukanya.</p>
+                <p><strong>Solusi (Gunakan Git Bash):</strong> Copy file key ke folder virtual <code>/tmp</code> di Git Bash yang secara otomatis mengunci izin akses file:</p>
+                <pre><code>cp "/d/Users/muhammad.najih/Documents/AIS-VISTA/ssh-key-2026-07-22.key" /tmp/oracle.key
+chmod 600 /tmp/oracle.key
+ssh -i /tmp/oracle.key ubuntu@129.225.9.167</code></pre>
+            </div>
+
+            <!-- Section 3 -->
+            <div class="section">
+                <h2>📋 Perintah Penting (Cheat Sheet)</h2>
+                <p>Gunakan perintah-perintah berikut langsung di folder <code>~/AIS-VISTA</code> pada terminal VPS Anda:</p>
+                
+                <h3>Memantau Log (Real-time)</h3>
+                <ul>
+                    <li>Melihat log Bot Python: <code>docker logs -f vista_bot</code></li>
+                    <li>Melihat log WAHA WhatsApp: <code>docker logs -f waha</code></li>
+                </ul>
+                <div class="note">
+                    <p>💡 <strong>Tips:</strong> Tekan tombol keyboard <code>Ctrl + C</code> untuk keluar dari tampilan log tanpa mematikan bot.</p>
+                </div>
+
+                <h3>Melihat Status Kontainer</h3>
+                <ul>
+                    <li>Melihat semua kontainer (termasuk yang mati): <code>docker ps -a</code></li>
+                    <li>Melihat hanya kontainer yang aktif: <code>docker ps</code></li>
+                </ul>
+
+                <h3>Mengupdate Kode ke Versi Terbaru</h3>
+                <pre><code>git pull
+docker rm -f waha vista_bot
+docker-compose -f docker-compose.prod.yml up -d --build</code></pre>
             </div>
 
             <footer>
