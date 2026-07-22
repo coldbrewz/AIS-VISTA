@@ -10,8 +10,8 @@ If you restart Git Bash and need to log back into the Oracle VPS:
   cp "/d/Users/muhammad.najih/Documents/AIS-VISTA/ssh-key-2026-07-22.key" /tmp/oracle.key
   chmod 600 /tmp/oracle.key
 
-  # SSH connect into the server
-  ssh -i /tmp/oracle.key ubuntu@129.225.9.167
+  # SSH connect into the server (with KeepAlive pings to prevent "Connection reset by peer")
+  ssh -o ServerAliveInterval=60 -i /tmp/oracle.key ubuntu@129.225.9.167
 
   # Navigate to the bot folder once logged in (MUST do this first!)
   cd AIS-VISTA

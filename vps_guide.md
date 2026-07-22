@@ -54,7 +54,7 @@ If you want to swap the number associated with the bot:
   ```bash
   cp "/d/Users/muhammad.najih/Documents/AIS-VISTA/ssh-key-2026-07-22.key" /tmp/oracle.key
   chmod 600 /tmp/oracle.key
-  ssh -i /tmp/oracle.key ubuntu@129.225.9.167
+  ssh -o ServerAliveInterval=60 -i /tmp/oracle.key ubuntu@129.225.9.167
   ```
 
 ---
@@ -65,7 +65,7 @@ If you want to swap the number associated with the bot:
 ```bash
 cp "/d/Users/muhammad.najih/Documents/AIS-VISTA/ssh-key-2026-07-22.key" /tmp/oracle.key
 chmod 600 /tmp/oracle.key
-ssh -i /tmp/oracle.key ubuntu@129.225.9.167
+ssh -o ServerAliveInterval=60 -i /tmp/oracle.key ubuntu@129.225.9.167
 cd AIS-VISTA
 ```
 
