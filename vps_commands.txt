@@ -13,7 +13,7 @@ If you restart Git Bash and need to log back into the Oracle VPS:
   # SSH connect into the server
   ssh -i /tmp/oracle.key ubuntu@129.225.9.167
 
-  # Navigate to the bot folder once logged in
+  # Navigate to the bot folder once logged in (MUST do this first!)
   cd AIS-VISTA
 
 
@@ -22,8 +22,11 @@ If you restart Git Bash and need to log back into the Oracle VPS:
   # Start the bot and WAHA in the background
   docker-compose -f docker-compose.prod.yml up -d
 
-  # Check which containers are running and their status/uptime
+  # Check only active/running containers
   docker ps
+
+  # Check ALL containers (running, stopped, or crashed)
+  docker ps -a
 
   # Stop both containers
   docker-compose -f docker-compose.prod.yml down
@@ -36,12 +39,14 @@ If you restart Git Bash and need to log back into the Oracle VPS:
 --------------------------------------------------------------------------------
 Whenever you push changes from your laptop or I push a fix to your GitHub:
 
-  # Pull latest code from GitHub
+  # 1. Pull latest code from GitHub
   git pull
 
-  # Re-build and restart the containers with the fresh code
+  # 2. Force delete old container instances to avoid Docker v1 conflicts
   docker rm -f waha vista_bot
-  docker-compose -f docker-compose.prod.yml up -d
+
+  # 3. Rebuild the Python image and start the containers with the new code
+  docker-compose -f docker-compose.prod.yml up -d --build
 
 
 4. LOG MONITORING (Run these inside the AIS-VISTA folder on VPS)
