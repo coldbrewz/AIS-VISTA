@@ -790,9 +790,198 @@ def process_message(message: dict):
         elif "kode:" in body.lower() or "kode :" in body.lower():
             send_whatsapp_message(reply_chat_id, "⚠️ *Update Gagal*\nHarap kirimkan *foto dokumentasi* beserta caption dengan format Kode yang benar (contoh: *Kode: 240523PV001*).", session)
 
-@app.get("/")
-def read_root():
-    return {"status": "VISTA Webhook is running."}
+from fastapi.responses import HTMLResponse
+
+@app.get("/", response_class=HTMLResponse)
+def read_root(request: Request):
+    # Retrieve current VPS hostname/IP dynamically from request headers
+    host = request.headers.get("host", "129.225.9.167:5001")
+    ip_only = host.split(":")[0]
+    
+    html_content = f"""
+    <!DOCTYPE html>
+    <html lang="id">
+    <head>
+        <meta charset="UTF-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <title>VISTA Integration Console</title>
+        <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@300;400;600;700&display=swap" rel="stylesheet">
+        <style>
+            * {{
+                box-sizing: border-box;
+                margin: 0;
+                padding: 0;
+            }}
+            body {{
+                font-family: 'Plus Jakarta Sans', sans-serif;
+                background: linear-gradient(135deg, #0f172a 0%, #1e1b4b 100%);
+                color: #f8fafc;
+                min-height: 100vh;
+                display: flex;
+                flex-direction: column;
+                align-items: center;
+                justify-content: center;
+                padding: 20px;
+            }}
+            .container {{
+                width: 100%;
+                max-width: 900px;
+                background: rgba(30, 41, 59, 0.5);
+                backdrop-filter: blur(16px);
+                border: 1px solid rgba(255, 255, 255, 0.08);
+                border-radius: 24px;
+                padding: 40px;
+                box-shadow: 0 20px 40px rgba(0, 0, 0, 0.3);
+            }}
+            header {{
+                text-align: center;
+                margin-bottom: 40px;
+            }}
+            h1 {{
+                font-size: 2.5rem;
+                font-weight: 700;
+                background: linear-gradient(to right, #38bdf8, #818cf8);
+                -webkit-background-clip: text;
+                -webkit-text-fill-color: transparent;
+                margin-bottom: 10px;
+            }}
+            .subtitle {{
+                color: #94a3b8;
+                font-size: 1.1rem;
+            }}
+            .status-badge {{
+                display: inline-flex;
+                align-items: center;
+                background: rgba(16, 185, 129, 0.1);
+                color: #34d399;
+                padding: 6px 16px;
+                border-radius: 99px;
+                font-size: 0.9rem;
+                font-weight: 600;
+                border: 1px solid rgba(52, 211, 153, 0.2);
+                margin-top: 15px;
+            }}
+            .status-badge::before {{
+                content: '';
+                display: inline-block;
+                width: 8px;
+                height: 8px;
+                background-color: #10b981;
+                border-radius: 50%;
+                margin-right: 8px;
+                box-shadow: 0 0 8px #10b981;
+            }}
+            .grid {{
+                display: grid;
+                grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+                gap: 25px;
+                margin-bottom: 30px;
+            }}
+            .card {{
+                background: rgba(15, 23, 42, 0.4);
+                border: 1px solid rgba(255, 255, 255, 0.05);
+                border-radius: 18px;
+                padding: 30px;
+                display: flex;
+                flex-direction: column;
+                justify-content: space-between;
+                transition: transform 0.2s ease, border-color 0.2s ease;
+            }}
+            .card:hover {{
+                transform: translateY(-4px);
+                border-color: rgba(129, 140, 248, 0.3);
+            }}
+            .card-title {{
+                font-size: 1.3rem;
+                font-weight: 600;
+                margin-bottom: 12px;
+                color: #e2e8f0;
+            }}
+            .card-desc {{
+                color: #94a3b8;
+                font-size: 0.95rem;
+                line-height: 1.5;
+                margin-bottom: 25px;
+                flex-grow: 1;
+            }}
+            .btn {{
+                display: block;
+                text-align: center;
+                padding: 12px 20px;
+                background: linear-gradient(to right, #4f46e5, #6366f1);
+                color: #ffffff;
+                text-decoration: none;
+                border-radius: 12px;
+                font-weight: 600;
+                transition: opacity 0.2s ease;
+            }}
+            .btn:hover {{
+                opacity: 0.9;
+            }}
+            .btn-secondary {{
+                background: rgba(255, 255, 255, 0.08);
+                border: 1px solid rgba(255, 255, 255, 0.1);
+                color: #e2e8f0;
+            }}
+            .btn-secondary:hover {{
+                background: rgba(255, 255, 255, 0.12);
+            }}
+            footer {{
+                text-align: center;
+                color: #64748b;
+                font-size: 0.85rem;
+                margin-top: 30px;
+            }}
+            a.excel-btn {{
+                background: linear-gradient(to right, #059669, #10b981);
+            }}
+        </style>
+    </head>
+    <body>
+        <div class="container">
+            <header>
+                <h1>VISTA Integration Console</h1>
+                <p class="subtitle">Console Manajemen Central untuk WAHA &amp; Python Bot</p>
+                <div class="status-badge">Sistem Online</div>
+            </header>
+            
+            <div class="grid">
+                <!-- Card 1: WAHA Dashboard -->
+                <div class="card">
+                    <div>
+                        <div class="card-title">WhatsApp Scanner</div>
+                        <p class="card-desc">Gunakan ini untuk scan QR Code WhatsApp baru, memantau session engine, dan menghubungkan nomor mandor ke bot.</p>
+                    </div>
+                    <a href="http://{ip_only}:3000" target="_blank" class="btn">Buka WAHA Dashboard</a>
+                </div>
+
+                <!-- Card 2: System Logs -->
+                <div class="card">
+                    <div>
+                        <div class="card-title">System Log Terminal</div>
+                        <p class="card-desc">Pantau aktivitas bot secara real-time. Bagus untuk memverifikasi proses update SLA, Gemini OCR, dan debug.</p>
+                    </div>
+                    <a href="http://{ip_only}:5001/logs" target="_blank" class="btn btn-secondary">Lihat Log Bot</a>
+                </div>
+
+                <!-- Card 3: MS Excel Link -->
+                <div class="card">
+                    <div>
+                        <div class="card-title">Excel Spreadsheet</div>
+                        <p class="card-desc">Buka dokumen Excel pusat yang sinkron dengan bot ini untuk melihat data progress SLA secara real-time.</p>
+                    </div>
+                    <a href="{settings.EXCEL_SHARE_LINK}" target="_blank" class="btn excel-btn">Buka Excel Online</a>
+                </div>
+            </div>
+
+            <footer>
+                <p>&copy; 2026 Project AIS-VISTA. Running on Oracle Ampere VPS (ARM64).</p>
+            </footer>
+        </div>
+    </body>
+    </html>
+    """
+    return HTMLResponse(content=html_content)
 
 @app.get("/logs")
 def get_logs(lines: int = 200):
