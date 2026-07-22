@@ -30,8 +30,8 @@ services:
       - WAHA_GOWS_DEVICE_HISTORY_SYNC_STORAGE_QUOTA_MB=128
     volumes:
       - ./waha_sessions:/app/.sessions
-    # GOWS is ultra-lightweight (~30MB RAM), no Chrome/Chromium needed
-    mem_limit: 256m
+    # GOWS is ultra-lightweight (~30MB RAM), but the Node.js NestJS wrapper needs ~300MB to start up.
+    mem_limit: 512m
     ports:
       - "3000:3000"
     depends_on:
