@@ -1,0 +1,91 @@
+================================================================================
+                    PROJECT AIS-VISTA - CHEAT SHEET COMMANDS
+================================================================================
+
+1. CONNECTING TO THE VPS (From your laptop's Git Bash)
+--------------------------------------------------------------------------------
+If you restart Git Bash and need to log back into the Oracle VPS:
+
+  # Copy the key to Git Bash virtual temp folder and lock it
+  cp "/d/Users/muhammad.najih/Documents/AIS-VISTA/ssh-key-2026-07-22.key" /tmp/oracle.key
+  chmod 600 /tmp/oracle.key
+
+  # SSH connect into the server
+  ssh -i /tmp/oracle.key ubuntu@129.225.9.167
+
+  # Navigate to the bot folder once logged in
+  cd AIS-VISTA
+
+
+2. DOCKER CONTROL COMMANDS (Run these inside the AIS-VISTA folder on VPS)
+--------------------------------------------------------------------------------
+  # Start the bot and WAHA in the background
+  docker-compose -f docker-compose.prod.yml up -d
+
+  # Check which containers are running and their status/uptime
+  docker ps
+
+  # Stop both containers
+  docker-compose -f docker-compose.prod.yml down
+
+  # Force-delete all containers (Run this if you get the ContainerConfig error!)
+  docker rm -f $(docker ps -aq)
+
+
+3. UPDATING THE BOT CODE (Run these inside the AIS-VISTA folder on VPS)
+--------------------------------------------------------------------------------
+Whenever you push changes from your laptop or I push a fix to your GitHub:
+
+  # Pull latest code from GitHub
+  git pull
+
+  # Re-build and restart the containers with the fresh code
+  docker rm -f waha vista_bot
+  docker-compose -f docker-compose.prod.yml up -d
+
+
+4. LOG MONITORING (Run these inside the AIS-VISTA folder on VPS)
+--------------------------------------------------------------------------------
+  # Watch Python Bot logs live in real-time (Press Ctrl+C to exit log view)
+  docker logs -f vista_bot
+
+  # Watch WAHA logs live (useful for QR code debug)
+  docker logs -f waha
+
+
+5. DATABASE & CONFIG RESET (Run these inside the AIS-VISTA folder on VPS)
+--------------------------------------------------------------------------------
+If you need to edit environment variables or fix SQLite errors:
+
+  # Edit .env file
+  nano .env
+
+  # Fix SQLite 'unable to open database file' directory error
+  docker-compose -f docker-compose.prod.yml down
+  rm -rf processed_messages.db
+  touch processed_messages.db
+  docker-compose -f docker-compose.prod.yml up -d
+
+
+6. FIREWALL & PORTS (Run these inside the AIS-VISTA folder on VPS)
+--------------------------------------------------------------------------------
+If you need to open browser ports for the WAHA Dashboard (3000) or logs (5001):
+
+  # Open port 3000 (WAHA Dashboard)
+  sudo iptables -I INPUT -p tcp --dport 3000 -j ACCEPT
+
+  # Open port 5001 (FastAPI Dashboard / logs)
+  sudo iptables -I INPUT -p tcp --dport 5001 -j ACCEPT
+
+
+7. USEFUL PORTS & URLS
+--------------------------------------------------------------------------------
+  # Central Dashboard (Logs, WAHA launcher, Excel Link):
+  http://129.225.9.167:5001/
+
+  # Raw Log Terminal:
+  http://129.225.9.167:5001/logs
+
+  # WAHA Admin Panel:
+  http://129.225.9.167:3000/
+================================================================================
