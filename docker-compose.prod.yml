@@ -32,6 +32,8 @@ services:
       - ./waha_sessions:/app/.sessions
     # GOWS is ultra-lightweight (~30MB RAM), no Chrome/Chromium needed
     mem_limit: 256m
+    ports:
+      - "3000:3000"
     depends_on:
       - vista_bot
     networks:
@@ -58,4 +60,5 @@ services:
 
 networks:
   proxy-network:
-    external: true
+    name: proxy-network
+    driver: bridge
