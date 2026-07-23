@@ -45,8 +45,12 @@ Whenever you push changes from your laptop or I push a fix to your GitHub:
   # 2. Force delete old container instances using name wildcards to avoid Docker v1 conflicts
   docker rm -f $(docker ps -aq --filter name=waha) $(docker ps -aq --filter name=vista_bot)
 
-  # 3. Rebuild the Python image and start the containers with the new code
+  # 3. Rebuild and start the containers:
+  # -> ON OFFICE VPS (Intel/AMD):
   docker-compose -f docker-compose.prod.yml up -d --build
+
+  # -> ON ORACLE AMPERE VPS (ARM64):
+  docker-compose -f docker-compose.arm.yml up -d --build
 
 
 4. LOG MONITORING (Run these inside the AIS-VISTA folder on VPS)

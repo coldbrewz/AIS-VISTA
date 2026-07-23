@@ -73,7 +73,12 @@ cd AIS-VISTA
 ```bash
 git pull
 docker rm -f $(docker ps -aq --filter name=waha) $(docker ps -aq --filter name=vista_bot)
+
+# On Office VPS (Intel/AMD):
 docker-compose -f docker-compose.prod.yml up -d --build
+
+# On Oracle Ampere VPS (ARM64):
+docker-compose -f docker-compose.arm.yml up -d --build
 ```
 
 ### Watching Logs Live
