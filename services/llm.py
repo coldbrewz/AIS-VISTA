@@ -42,6 +42,15 @@ extract:
 
 extraction rules:
 - for panjang, lebar, tebal: extract the numbers precisely regardless of messy spacing, missing spaces, colons, commas, or typos (e.g., "Tebal:0,07" -> "0,07").
+- for metode_perbaikan:
+  If the sheet_name is "PV", you MUST map the method to one of the following official values by correcting any typos or spelling variations:
+  * "CnP"
+  * "Hotmix"
+  * "Coldmix" (e.g., map "coolmix", "cold-mix", "colmix" to "Coldmix")
+  * "Scrapmix" (e.g., map "scrap", "scrab" to "Scrapmix")
+  * "Sealent" (e.g., map "sealen", "selent", "sealant" to "Sealent")
+  * "Asphaltic Plug" (e.g., map "asphaltic", "plug", "asphalt" to "Asphaltic Plug")
+  * "Marka" (e.g., map "marker", "mark" to "Marka")
 
 sheet_name rules:
 - extract sheet code from kode

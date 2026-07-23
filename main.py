@@ -714,6 +714,44 @@ def process_message(message: dict):
             payload, err = extract_sla_data(img_bytes, caption, msg_datetime_str)
             
             if payload:
+                # Post-processing: Correct 'metode_perbaikan' typos specifically for the "PV" sheet
+                if payload.sheet_name == "PV" and payload.metode_perbaikan:
+                    val = payload.metode_perbaikan.strip()
+                    valid_methods = ["CnP", "Hotmix", "Coldmix", "Scrapmix", "Sealent", "Asphaltic Plug", "Marka"]
+                    
+                    # 1. Normalize character casing and symbols for comparison
+                    lower_val = val.lower().replace(" ", "").replace("-", "").replace("_", "")
+                    matched = None
+                    
+                    # 2. Try to find an exact case-insensitive match first
+                    for m in valid_methods:
+                        lower_m = m.lower().replace(" ", "").replace("-", "").replace("_", "")
+                        if lower_val == lower_m:
+                            matched = m
+                            break
+                    
+                    # 3. If no exact match, fallback to smart keyword fuzzy matching
+                    if not matched:
+                        if "cool" in lower_val or "col" in lower_val or "cold" in lower_val:
+                            matched = "Coldmix"
+                        elif "hot" in lower_val or "hopt" in lower_val or "hoot" in lower_val:
+                            matched = "Hotmix"
+                        elif "scrap" in lower_val or "scrab" in lower_val:
+                            matched = "Scrapmix"
+                        elif "seal" in lower_val or "selent" in lower_val or "sealen" in lower_val or "sealant" in lower_val:
+                            matched = "Sealent"
+                        elif "plug" in lower_val or "asphaltic" in lower_val or "asphalt" in lower_val:
+                            matched = "Asphaltic Plug"
+                        elif "mark" in lower_val:
+                            matched = "Marka"
+                        elif "cnp" in lower_val:
+                            matched = "CnP"
+                    
+                    # 4. Apply the corrected formal method name if matched
+                    if matched:
+                        print(f"🔧 Auto-corrected PV Metode: '{val}' -> '{matched}'")
+                        payload.metode_perbaikan = matched
+                
                 try:
                     parsed_dt = datetime.datetime.strptime(payload.tanggal_perbaikan, '%Y-%m-%d %H:%M:%S')
                     excel_date_formula = f"=DATE({parsed_dt.year},{parsed_dt.month},{parsed_dt.day})+TIME({parsed_dt.hour},{parsed_dt.minute},{parsed_dt.second})"
