@@ -740,7 +740,7 @@ def process_message(message: dict):
                             matched = "Scrapmix"
                         elif "seal" in lower_val or "selent" in lower_val or "sealen" in lower_val or "sealant" in lower_val:
                             matched = "Sealent"
-                        elif "plug" in lower_val or "asphaltic" in lower_val or "asphalt" in lower_val:
+                        elif "plug" in lower_val or "asphaltic" in lower_val or "asphalt" in lower_val or "aspalt" in lower_val:
                             matched = "Asphaltic Plug"
                         elif "mark" in lower_val:
                             matched = "Marka"
