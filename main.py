@@ -795,8 +795,20 @@ from fastapi.responses import HTMLResponse
 @app.get("/", response_class=HTMLResponse)
 def read_root(request: Request):
     # Retrieve current VPS hostname/IP dynamically from request headers
-    host = request.headers.get("host", "129.225.9.167:5001")
-    ip_only = host.split(":")[0]
+    host = request.headers.get("host", "")
+    
+    # Check if we are running in the production workspace (domain-based)
+    if "astrainfrasolutions.id" in host:
+        # Production reverse-proxied links (Nginx maps port 80/443 directly)
+        waha_url = "https://waha.astrainfrasolutions.id"
+        logs_url = "/logs"
+        guide_url = "/guide"
+    else:
+        # Local / private VPS backup links
+        ip_only = host.split(":")[0] if host else "129.225.9.167"
+        waha_url = f"http://{ip_only}:3000"
+        logs_url = f"http://{ip_only}:5001/logs"
+        guide_url = f"http://{ip_only}:5001/guide"
     
     html_content = f"""
     <!DOCTYPE html>
@@ -952,7 +964,7 @@ def read_root(request: Request):
                         <div class="card-title">WhatsApp Scanner</div>
                         <p class="card-desc">Gunakan ini untuk scan QR Code WhatsApp baru, memantau session engine, dan menghubungkan nomor mandor ke bot.</p>
                     </div>
-                    <a href="http://{ip_only}:3000" target="_blank" class="btn">Buka WAHA Dashboard</a>
+                    <a href="{waha_url}" target="_blank" class="btn">Buka WAHA Dashboard</a>
                 </div>
 
                 <!-- Card 2: System Logs -->
@@ -961,7 +973,7 @@ def read_root(request: Request):
                         <div class="card-title">System Log Terminal</div>
                         <p class="card-desc">Pantau aktivitas bot secara real-time. Bagus untuk memverifikasi proses update SLA, Gemini OCR, dan debug.</p>
                     </div>
-                    <a href="http://{ip_only}:5001/logs" target="_blank" class="btn btn-secondary">Lihat Log Bot</a>
+                    <a href="{logs_url}" target="_blank" class="btn btn-secondary">Lihat Log Bot</a>
                 </div>
 
                 <!-- Card 3: MS Excel Link -->
@@ -979,7 +991,7 @@ def read_root(request: Request):
                         <div class="card-title">Panduan &amp; FAQ</div>
                         <p class="card-desc">Buka dokumentasi lengkap cara ganti nomor WA, troubleshooting error SQLite/Docker, dan daftar perintah penting.</p>
                     </div>
-                    <a href="http://{ip_only}:5001/guide" target="_blank" class="btn btn-secondary" style="background: linear-gradient(to right, #7c3aed, #8b5cf6);">Buka Panduan</a>
+                    <a href="{guide_url}" target="_blank" class="btn btn-secondary" style="background: linear-gradient(to right, #7c3aed, #8b5cf6);">Buka Panduan</a>
                 </div>
             </div>
 
@@ -993,8 +1005,16 @@ def read_root(request: Request):
     return HTMLResponse(content=html_content)
 
 @app.get("/guide", response_class=HTMLResponse)
-def get_guide():
-    html_content = """
+def get_guide(request: Request):
+    # Retrieve current host dynamically to construct the back link and WAHA link
+    host = request.headers.get("host", "")
+    if "astrainfrasolutions.id" in host:
+        waha_dash_link = "https://waha.astrainfrasolutions.id"
+    else:
+        ip_only = host.split(":")[0] if host else "129.225.9.167"
+        waha_dash_link = f"http://{ip_only}:3000"
+        
+    html_content = f"""
     <!DOCTYPE html>
     <html lang="id">
     <head>
@@ -1003,12 +1023,12 @@ def get_guide():
         <title>VISTA Bot Guide &amp; FAQ</title>
         <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@300;400;600;700&display=swap" rel="stylesheet">
         <style>
-            * {
+            * {{
                 box-sizing: border-box;
                 margin: 0;
                 padding: 0;
-            }
-            body {
+            }}
+            body {{
                 font-family: 'Plus Jakarta Sans', sans-serif;
                 background: linear-gradient(135deg, #0f172a 0%, #1e1b4b 100%);
                 color: #f8fafc;
@@ -1017,8 +1037,8 @@ def get_guide():
                 display: flex;
                 flex-direction: column;
                 align-items: center;
-            }
-            .container {
+            }}
+            .container {{
                 width: 100%;
                 max-width: 900px;
                 background: rgba(30, 41, 59, 0.5);
@@ -1027,13 +1047,13 @@ def get_guide():
                 border-radius: 24px;
                 padding: 40px;
                 box-shadow: 0 20px 40px rgba(0, 0, 0, 0.3);
-            }
-            header {
+            }}
+            header {{
                 margin-bottom: 35px;
                 border-bottom: 1px solid rgba(255, 255, 255, 0.08);
                 padding-bottom: 25px;
-            }
-            .back-btn {
+            }}
+            .back-btn {{
                 display: inline-flex;
                 align-items: center;
                 color: #38bdf8;
@@ -1042,26 +1062,26 @@ def get_guide():
                 font-size: 0.95rem;
                 margin-bottom: 20px;
                 transition: opacity 0.2s ease;
-            }
-            .back-btn:hover {
+            }}
+            .back-btn:hover {{
                 opacity: 0.8;
-            }
-            h1 {
+            }}
+            h1 {{
                 font-size: 2.3rem;
                 font-weight: 700;
                 background: linear-gradient(to right, #38bdf8, #818cf8);
                 -webkit-background-clip: text;
                 -webkit-text-fill-color: transparent;
                 margin-bottom: 8px;
-            }
-            .subtitle {
+            }}
+            .subtitle {{
                 color: #94a3b8;
                 font-size: 1.05rem;
-            }
-            .section {
+            }}
+            .section {{
                 margin-bottom: 35px;
-            }
-            h2 {
+            }}
+            h2 {{
                 font-size: 1.5rem;
                 font-weight: 600;
                 color: #e2e8f0;
@@ -1070,30 +1090,30 @@ def get_guide():
                 align-items: center;
                 border-bottom: 1px solid rgba(255, 255, 255, 0.05);
                 padding-bottom: 8px;
-            }
-            h3 {
+            }}
+            h3 {{
                 font-size: 1.15rem;
                 font-weight: 600;
                 color: #f1f5f9;
                 margin: 20px 0 10px 0;
-            }
-            p {
+            }}
+            p {{
                 color: #94a3b8;
                 font-size: 0.98rem;
                 line-height: 1.6;
                 margin-bottom: 12px;
-            }
-            ul, ol {
+            }}
+            ul, ol {{
                 margin-left: 25px;
                 margin-bottom: 15px;
                 color: #94a3b8;
                 font-size: 0.98rem;
                 line-height: 1.6;
-            }
-            li {
+            }}
+            li {{
                 margin-bottom: 8px;
-            }
-            code {
+            }}
+            code {{
                 font-family: monospace;
                 background: rgba(15, 23, 42, 0.6);
                 color: #f43f5e;
@@ -1101,41 +1121,41 @@ def get_guide():
                 border-radius: 6px;
                 font-size: 0.9rem;
                 border: 1px solid rgba(255, 255, 255, 0.05);
-            }
-            pre {
+            }}
+            pre {{
                 background: rgba(15, 23, 42, 0.8);
                 border: 1px solid rgba(255, 255, 255, 0.06);
                 border-radius: 12px;
                 padding: 16px;
                 margin: 15px 0;
                 overflow-x: auto;
-            }
-            pre code {
+            }}
+            pre code {{
                 background: none;
                 border: none;
                 color: #38bdf8;
                 padding: 0;
                 font-size: 0.9rem;
-            }
-            footer {
+            }}
+            footer {{
                 text-align: center;
                 color: #64748b;
                 font-size: 0.85rem;
                 margin-top: 30px;
                 border-top: 1px solid rgba(255, 255, 255, 0.08);
                 padding-top: 25px;
-            }
-            .note {
+            }}
+            .note {{
                 background: rgba(56, 189, 248, 0.05);
                 border-left: 4px solid #38bdf8;
                 padding: 15px;
                 border-radius: 4px 12px 12px 4px;
                 margin: 20px 0;
-            }
-            .note p {
+            }}
+            .note p {{
                 margin-bottom: 0;
                 color: #e2e8f0;
-            }
+            }}
         </style>
     </head>
     <body>
@@ -1152,7 +1172,7 @@ def get_guide():
                 <h3>Cara Mengganti Nomor WhatsApp yang Terhubung</h3>
                 <p>Jika Anda ingin mengganti nomor WhatsApp bot dengan nomor baru, ikuti prosedur aman berikut:</p>
                 <ol>
-                    <li><strong>Log out nomor lama:</strong> Di HP lama Anda, buka WhatsApp &rarr; <strong>Perangkat Tertaut (Linked Devices)</strong> &rarr; Pilih sesi WAHA &rarr; Klik <strong>Keluar (Log out)</strong>. (Atau gunakan tombol Logout di WAHA Dashboard).</li>
+                    <li><strong>Log out nomor lama:</strong> Di HP lama Anda, buka WhatsApp &rarr; <strong>Perangkat Tertaut (Linked Devices)</strong> &rarr; Pilih sesi WAHA &rarr; Klik <strong>Keluar (Log out)</strong>. (Atau gunakan tombol Logout di <a href="{waha_dash_link}" target="_blank" style="color: #38bdf8; text-decoration: none; font-weight: 600;">WAHA Dashboard</a>).</li>
                     <li><strong>Stop containers di VPS:</strong> Masuk ke SSH server, masuk ke folder <code>AIS-VISTA</code>, dan matikan layanannya:
                         <pre><code>docker-compose -f docker-compose.prod.yml down</code></pre>
                     </li>
@@ -1181,7 +1201,7 @@ docker-compose -f docker-compose.prod.yml up -d</code></pre>
                 <h3>2. Error: <code>KeyError: 'ContainerConfig'</code></h3>
                 <p><strong>Penyebab:</strong> Program <code>docker-compose</code> versi lama mengalami bug saat mencoba menimpa container yang sedang berjalan.</p>
                 <p><strong>Solusi:</strong> Hapus container yang lama terlebih dahulu secara manual, baru nyalakan kembali:</p>
-                <pre><code>docker rm -f waha vista_bot
+                <pre><code>docker rm -f $(docker ps -aq --filter name=waha) $(docker ps -aq --filter name=vista_bot)
 docker-compose -f docker-compose.prod.yml up -d</code></pre>
 
                 <h3>3. Error: <code>Unprotected Private Key File / Bad permissions</code></h3>
@@ -1189,7 +1209,7 @@ docker-compose -f docker-compose.prod.yml up -d</code></pre>
                 <p><strong>Solusi (Gunakan Git Bash):</strong> Copy file key ke folder virtual <code>/tmp</code> di Git Bash yang secara otomatis mengunci izin akses file:</p>
                 <pre><code>cp "/d/Users/muhammad.najih/Documents/AIS-VISTA/ssh-key-2026-07-22.key" /tmp/oracle.key
 chmod 600 /tmp/oracle.key
-ssh -i /tmp/oracle.key ubuntu@129.225.9.167</code></pre>
+ssh -o ServerAliveInterval=60 -i /tmp/oracle.key ubuntu@129.225.9.167</code></pre>
             </div>
 
             <!-- Section 3 -->
@@ -1213,9 +1233,15 @@ ssh -i /tmp/oracle.key ubuntu@129.225.9.167</code></pre>
                 </ul>
 
                 <h3>Mengupdate Kode ke Versi Terbaru</h3>
+                <p>Pilih file compose yang sesuai dengan arsitektur server Anda:</p>
                 <pre><code>git pull
-docker rm -f waha vista_bot
-docker-compose -f docker-compose.prod.yml up -d --build</code></pre>
+docker rm -f $(docker ps -aq --filter name=waha) $(docker ps -aq --filter name=vista_bot)
+
+# On Office VPS (Intel/AMD):
+docker-compose -f docker-compose.prod.yml up -d --build
+
+# On Oracle Ampere VPS (ARM64):
+docker-compose -f docker-compose.arm.yml up -d --build</code></pre>
             </div>
 
             <footer>
