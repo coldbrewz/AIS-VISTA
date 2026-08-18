@@ -6,8 +6,12 @@ from google.genai import types
 from schemas import SLAExtractionPayload
 from config import settings
 
+http_opts = {"base_url": settings.GEMINI_BASE_URL} if settings.GEMINI_BASE_URL else None
+
 client = (
-    genai.Client(api_key=settings.GEMINI_API_KEY) if settings.GEMINI_API_KEY else None
+    genai.Client(api_key=settings.GEMINI_API_KEY, http_options=http_opts)
+    if settings.GEMINI_API_KEY
+    else None
 )
 
 

@@ -3,6 +3,7 @@ from typing import Optional
 
 class Settings(BaseSettings):
     GEMINI_API_KEY: Optional[str] = None
+    GEMINI_BASE_URL: Optional[str] = None
     
     WAHA_API_KEY: str = ""
     WAHA_URL: str = "http://localhost:3000"
