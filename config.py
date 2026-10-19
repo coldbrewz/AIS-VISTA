@@ -4,7 +4,7 @@ from typing import Optional
 class Settings(BaseSettings):
     VIKEY_API_KEY: Optional[str] = None
     VIKEY_BASE_URL: str = "https://api.vikey.ai/v1/chat/completions"
-    VIKEY_MODEL: str = "glm/glm-5.3-flash"
+    VIKEY_MODEL: str = "deepseek/deepseek-v4.1-flash"
     
     WAHA_API_KEY: str = ""
     WAHA_URL: str = "http://localhost:3000"
