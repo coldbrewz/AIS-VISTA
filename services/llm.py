@@ -162,7 +162,7 @@ return exactly:
         prompt_tokens = usage.get("prompt_tokens", 0)
         completion_tokens = usage.get("completion_tokens", 0)
         total_tokens = usage.get("total_tokens", 0)
-        print(f"📊 Token Usage -> Prompt: {prompt_tokens} | Output: {completion_tokens} | Total: {total_tokens}")
+        print(f"[Token Usage] Prompt: {prompt_tokens} | Output: {completion_tokens} | Total: {total_tokens}")
 
     choices = data_json.get("choices")
     if not choices or not isinstance(choices, list):
