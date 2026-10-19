@@ -1,8 +1,7 @@
-﻿fastapi
+fastapi
 uvicorn
 pydantic
 pydantic-settings
 requests
 msal
-google-genai
 pillow

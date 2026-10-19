@@ -2,8 +2,9 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 from typing import Optional
 
 class Settings(BaseSettings):
-    GEMINI_API_KEY: Optional[str] = None
-    GEMINI_BASE_URL: Optional[str] = None
+    VIKEY_API_KEY: Optional[str] = None
+    VIKEY_BASE_URL: str = "https://api.vikey.ai/v1/chat/completions"
+    VIKEY_MODEL: str = "glm/glm-5.3-flash"
     
     WAHA_API_KEY: str = ""
     WAHA_URL: str = "http://localhost:3000"
@@ -32,5 +33,13 @@ class Settings(BaseSettings):
         url = self.WAHA_URL.strip() if self.WAHA_URL else ""
         if url and not url.startswith(("http://", "https://")):
             self.WAHA_URL = f"http://{url}"
+
+        vikey_url = self.VIKEY_BASE_URL.strip() if self.VIKEY_BASE_URL else ""
+        if vikey_url:
+            if not vikey_url.startswith(("http://", "https://")):
+                vikey_url = f"https://{vikey_url}"
+            if not vikey_url.endswith("/chat/completions"):
+                vikey_url = vikey_url.rstrip("/") + "/chat/completions"
+            self.VIKEY_BASE_URL = vikey_url
 
 settings = Settings()

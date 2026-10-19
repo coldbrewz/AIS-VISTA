@@ -709,7 +709,7 @@ def process_message(message: dict):
 
                 img_bytes = download_whatsapp_media(internal_media_url)
             
-            # 2. Process with Gemini Vision FIRST so we get the date/sheet name
+            # 2. Process with AI Vision FIRST so we get the date/sheet name
             print("Step 2: Extracting AI data...")
             payload, err = extract_sla_data(img_bytes, caption, msg_datetime_str)
             
@@ -1009,7 +1009,7 @@ def read_root(request: Request):
                 <div class="card">
                     <div>
                         <div class="card-title">System Log Terminal</div>
-                        <p class="card-desc">Pantau aktivitas bot secara real-time. Bagus untuk memverifikasi proses update SLA, Gemini OCR, dan debug.</p>
+                        <p class="card-desc">Pantau aktivitas bot secara real-time. Bagus untuk memverifikasi proses update SLA, AI OCR, dan debug.</p>
                     </div>
                     <a href="{logs_url}" target="_blank" class="btn btn-secondary">Lihat Log Bot</a>
                 </div>

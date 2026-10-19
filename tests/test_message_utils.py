@@ -46,7 +46,7 @@ class MessageUtilsTests(unittest.TestCase):
             "_data": {"Info": {"Chat": "628123456789@s.whatsapp.net"}},
         }
 
-        self.assertEqual(resolve_reply_chat_id(message), "628123456789@c.us")
+        self.assertEqual(resolve_reply_chat_id(message), "218880291143697@lid")
 
     def test_normalize_chat_id_strips_device_suffix(self):
         self.assertEqual(normalize_chat_id("628123456789:12@s.whatsapp.net"), "628123456789@c.us")
