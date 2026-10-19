@@ -38,12 +38,19 @@ def extract_sla_data(
     prompt = f"""you are an automated sla tracking assistant for a toll road company.
 analyze the image and whatsapp caption.
 
-priority rules:
-1. caption overrides image.
-2. return json only.
-3. no explanations.
-4. no markdown.
-5. no extra fields.
+priority and source rules:
+1. caption overrides image for defect codes, methods, and dimensions.
+2. for tanggal_perbaikan (date and time):
+   - ALWAYS look for the camera watermark on the photo (e.g. Marki camera box, GPS Map Camera stamp, clock icon 🕒 like "13:44 Senin 19-10-2026").
+   - extract the EXACT TIME (hour and minute, e.g. "13:44" -> 13:44:00).
+   - if caption only provides the date (e.g. "19-10-2026" or "19/10/2026") without hour/minute, you MUST combine the date from caption with the exact time from the image watermark.
+   - NEVER output 00:00:00 if an exact time is visible on the image watermark.
+   - if caption explicitly contains both date AND time (e.g. "19-10-2026 13:44"), use both from caption.
+   - if no date or time can be found on either caption or watermark, use fallback: {fallback_date}.
+3. return json only.
+4. no explanations.
+5. no markdown.
+6. no extra fields.
 
 extract:
 - kode
@@ -67,7 +74,8 @@ extraction rules:
   * "Marka" (e.g., map "marker", "mark" to "Marka")
 
 sheet_name rules:
-- extract sheet code from kode
+- extract sheet code from kode (letters in kode like PV, DR, FE, GR, SG, LC, RM, CA, WR).
+- if not in kode, infer from image or watermark context (e.g. guardrail -> GR, perkerasan -> PV, drainase -> DR).
 - valid values:
   PV, DR, FE, GR, SG, LC, RM, CA, WR
 - otherwise ""
@@ -75,6 +83,9 @@ sheet_name rules:
 date rules:
 - output format:
   YYYY-MM-DD HH:MM:SS
+- format examples:
+  - if watermark has "13:44 Senin 19-10-2026" -> output "2026-10-19 13:44:00"
+  - if caption has "19-10-2026" and watermark has "13:44" -> output "2026-10-19 13:44:00"
 - if date not found use:
   {fallback_date}
 

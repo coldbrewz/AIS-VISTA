@@ -688,8 +688,13 @@ def process_message(message: dict):
         timestamp_unix = message.get("timestamp", "")
         msg_datetime_str = ""
         if timestamp_unix:
-            dt = datetime.datetime.fromtimestamp(int(timestamp_unix))
-            msg_datetime_str = dt.strftime('%Y-%m-%d %H:%M:%S')
+            try:
+                dt = datetime.datetime.fromtimestamp(int(timestamp_unix))
+                msg_datetime_str = dt.strftime('%Y-%m-%d %H:%M:%S')
+            except Exception:
+                msg_datetime_str = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+        else:
+            msg_datetime_str = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')
         
         print("Step 1: Downloading photo via WAHA...")
         
@@ -754,6 +759,16 @@ def process_message(message: dict):
                 
                 try:
                     parsed_dt = datetime.datetime.strptime(payload.tanggal_perbaikan, '%Y-%m-%d %H:%M:%S')
+                    # Safety net: if model returned 00:00:00, borrow the time component from the WhatsApp message timestamp
+                    if parsed_dt.hour == 0 and parsed_dt.minute == 0 and parsed_dt.second == 0 and msg_datetime_str:
+                        try:
+                            fallback_dt = datetime.datetime.strptime(msg_datetime_str, '%Y-%m-%d %H:%M:%S')
+                            parsed_dt = parsed_dt.replace(hour=fallback_dt.hour, minute=fallback_dt.minute, second=fallback_dt.second)
+                            payload.tanggal_perbaikan = parsed_dt.strftime('%Y-%m-%d %H:%M:%S')
+                            print(f"🕒 Fallback time applied: Replaced 00:00:00 with {parsed_dt.strftime('%H:%M:%S')} from message timestamp.")
+                        except Exception:
+                            pass
+
                     excel_date_formula = f"=DATE({parsed_dt.year},{parsed_dt.month},{parsed_dt.day})+TIME({parsed_dt.hour},{parsed_dt.minute},{parsed_dt.second})"
                     
                     months_id = ["Januari", "Februari", "Maret", "April", "Mei", "Juni", "Juli", "Agustus", "September", "Oktober", "November", "Desember"]
