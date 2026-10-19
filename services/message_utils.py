@@ -130,3 +130,39 @@ def resolve_media_download_url(message: dict, base_waha_url: str) -> str | None:
 
     session = _clean_string(message.get("_session")) or "default"
     return f"{base_waha_url}/api/{session}/messages/{message_id}/download"
+
+
+def reconcile_date_with_message_time(
+    parsed_dt, msg_dt
+):
+    """
+    Reconciles ambiguous day/month order (DD-MM vs MM-DD) using WhatsApp message timestamp.
+    Runs locally in Python with zero extra LLM tokens.
+    """
+    changed = False
+
+    # 1. Year sanity check: if OCR read a wildly wrong year, snap to message year
+    if abs(parsed_dt.year - msg_dt.year) > 1:
+        try:
+            parsed_dt = parsed_dt.replace(year=msg_dt.year)
+            changed = True
+        except ValueError:
+            pass
+
+    # 2. Ambiguous day/month check:
+    # If the extracted month does NOT match the message month, but the extracted day matches the message month,
+    # check if swapping day and month produces the actual message month.
+    # E.g. extracted 2026-05-08 (8 May) when message arrived in August (month 8).
+    # Swapping yields 2026-08-05 (5 August).
+    if parsed_dt.month != msg_dt.month and parsed_dt.day == msg_dt.month:
+        candidate_day = parsed_dt.month
+        candidate_month = parsed_dt.day
+        try:
+            swapped = parsed_dt.replace(month=candidate_month, day=candidate_day)
+            # Verify swapped date is not in future relative to message arrival
+            if (swapped.date() - msg_dt.date()).days <= 1:
+                return swapped, True
+        except ValueError:
+            pass
+
+    return parsed_dt, changed

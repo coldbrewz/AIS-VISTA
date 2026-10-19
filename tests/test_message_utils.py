@@ -76,6 +76,30 @@ class MessageUtilsTests(unittest.TestCase):
             "http://waha:3000/api/default/messages/false_218880291143697@lid_TEST/download",
         )
 
+    def test_reconcile_date_swaps_ambiguous_month_and_day(self):
+        import datetime
+        from services.message_utils import reconcile_date_with_message_time
+
+        # OCR read 2026-05-08 (8 May), but message was sent on 2026-08-05 (5 August)
+        parsed_dt = datetime.datetime(2026, 5, 8, 14, 0, 0)
+        msg_dt = datetime.datetime(2026, 8, 5, 14, 5, 0)
+
+        reconciled, changed = reconcile_date_with_message_time(parsed_dt, msg_dt)
+        self.assertTrue(changed)
+        self.assertEqual(reconciled.month, 8)
+        self.assertEqual(reconciled.day, 5)
+
+    def test_reconcile_date_leaves_correct_date_unchanged(self):
+        import datetime
+        from services.message_utils import reconcile_date_with_message_time
+
+        parsed_dt = datetime.datetime(2026, 10, 19, 13, 44, 0)
+        msg_dt = datetime.datetime(2026, 10, 19, 13, 45, 0)
+
+        reconciled, changed = reconcile_date_with_message_time(parsed_dt, msg_dt)
+        self.assertFalse(changed)
+        self.assertEqual(reconciled, parsed_dt)
+
 
 if __name__ == "__main__":
     unittest.main()

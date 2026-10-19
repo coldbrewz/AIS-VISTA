@@ -9,7 +9,7 @@ import time
 import sqlite3
 from config import settings
 from services.llm import extract_sla_data
-from services.message_utils import extract_kode_from_text, extract_message_id, resolve_media_download_url, resolve_reply_chat_id
+from services.message_utils import extract_kode_from_text, extract_message_id, resolve_media_download_url, resolve_reply_chat_id, reconcile_date_with_message_time
 from services.whatsapp import send_whatsapp_message
 from services.microsoft import update_excel_row, upload_photo_to_onedrive
 
@@ -759,7 +759,21 @@ def process_message(message: dict):
                 
                 try:
                     parsed_dt = datetime.datetime.strptime(payload.tanggal_perbaikan, '%Y-%m-%d %H:%M:%S')
-                    # Safety net: if model returned 00:00:00, borrow the time component from the WhatsApp message timestamp
+
+                    # 1. Ambiguous day/month reconciliation:
+                    # Resolve DD-MM-YYYY vs MM-DD-YYYY using WhatsApp message arrival time (0 extra AI tokens)
+                    if msg_datetime_str:
+                        try:
+                            msg_dt = datetime.datetime.strptime(msg_datetime_str, '%Y-%m-%d %H:%M:%S')
+                            reconciled_dt, was_swapped = reconcile_date_with_message_time(parsed_dt, msg_dt)
+                            if was_swapped:
+                                print(f"📅 Date auto-corrected: Swapped ambiguous day/month from {parsed_dt.strftime('%Y-%m-%d')} to {reconciled_dt.strftime('%Y-%m-%d')} based on WhatsApp message timestamp.")
+                                parsed_dt = reconciled_dt
+                                payload.tanggal_perbaikan = parsed_dt.strftime('%Y-%m-%d %H:%M:%S')
+                        except Exception as dt_err:
+                            print(f"Warning: Failed to reconcile date with message time: {dt_err}")
+
+                    # 2. Safety net: if model returned 00:00:00, borrow the time component from the WhatsApp message timestamp
                     if parsed_dt.hour == 0 and parsed_dt.minute == 0 and parsed_dt.second == 0 and msg_datetime_str:
                         try:
                             fallback_dt = datetime.datetime.strptime(msg_datetime_str, '%Y-%m-%d %H:%M:%S')
