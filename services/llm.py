@@ -1,12 +1,37 @@
 import base64
+import io
 import json
 import re
 import time
 from typing import Tuple, Optional
+from PIL import Image
 import requests
 from pydantic import ValidationError
 from schemas import SLAExtractionPayload
 from config import settings
+
+
+def prepare_image_for_llm(image_bytes: bytes, max_size: int = 1536, quality: int = 85) -> str:
+    """
+    Resizes and compresses images to prevent HTTP 413 (Payload Too Large) errors
+    while preserving high OCR clarity for watermarks.
+    Returns base64 encoded string.
+    """
+    try:
+        with Image.open(io.BytesIO(image_bytes)) as img:
+            if img.mode != "RGB":
+                img = img.convert("RGB")
+            width, height = img.size
+            if max(width, height) > max_size:
+                scale = max_size / max(width, height)
+                new_size = (int(width * scale), int(height * scale))
+                img = img.resize(new_size, Image.Resampling.LANCZOS)
+            buf = io.BytesIO()
+            img.save(buf, format="JPEG", quality=quality, optimize=True)
+            return base64.b64encode(buf.getvalue()).decode("utf-8")
+    except Exception as e:
+        print(f"Warning: Image compression for LLM failed ({e}), using raw bytes.")
+        return base64.b64encode(image_bytes).decode("utf-8")
 
 
 def extract_json_str(text: str) -> str:
@@ -106,7 +131,7 @@ return exactly:
   "tebal":""
 }}"""
 
-    b64_image = base64.b64encode(image_bytes).decode("utf-8")
+    b64_image = prepare_image_for_llm(image_bytes)
 
     headers = {
         "Content-Type": "application/json",
