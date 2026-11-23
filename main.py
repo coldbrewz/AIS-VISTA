@@ -33,6 +33,7 @@ from services.whatsapp import send_whatsapp_message
 from services.microsoft import (
     append_opname_rows,
     delete_opname_rows_by_id,
+    ensure_monthly_opname_workbook,
     lookup_sla_location,
     update_excel_row,
     upload_photo_to_onedrive,
@@ -508,8 +509,23 @@ def init_db():
                  status TEXT DEFAULT 'ACTIVE',
                  created_at TEXT,
                  pic TEXT,
-                 kode_temuan TEXT
+                 kode_temuan TEXT,
+                 drive_id TEXT DEFAULT '',
+                 item_id TEXT DEFAULT ''
                  )''')
+    c.execute('''CREATE TABLE IF NOT EXISTS opname_workbooks (
+                 cycle_key TEXT PRIMARY KEY,
+                 drive_id TEXT,
+                 item_id TEXT,
+                 web_url TEXT,
+                 created_at TEXT
+                 )''')
+    # Upgrade older opname_entries schema gracefully if columns missing
+    existing_cols = {row[1] for row in c.execute("PRAGMA table_info(opname_entries)").fetchall()}
+    if "drive_id" not in existing_cols:
+        c.execute("ALTER TABLE opname_entries ADD COLUMN drive_id TEXT DEFAULT ''")
+    if "item_id" not in existing_cols:
+        c.execute("ALTER TABLE opname_entries ADD COLUMN item_id TEXT DEFAULT ''")
     conn.commit()
     conn.close()
 
@@ -573,7 +589,7 @@ def handle_undo_command(reply_chat_id: str, body_text: str, session: str):
     conn = sqlite3.connect(settings.DB_URL)
     c = conn.cursor()
     c.execute(
-        "SELECT DISTINCT table_name FROM opname_entries WHERE UPPER(opname_id) = ? AND status = 'ACTIVE'",
+        "SELECT DISTINCT table_name, COALESCE(drive_id, ''), COALESCE(item_id, '') FROM opname_entries WHERE UPPER(opname_id) = ? AND status = 'ACTIVE'",
         (opname_id,),
     )
     rows = c.fetchall()
@@ -585,9 +601,15 @@ def handle_undo_command(reply_chat_id: str, body_text: str, session: str):
             session,
         )
         return
-    table_name = rows[0][0]
+    table_name, drive_id, item_id = rows[0]
+    target_di = (drive_id, item_id) if (drive_id and item_id) else None
     try:
-        deleted = delete_opname_rows_by_id(settings.OPNAME_EXCEL_SHARE_LINK, table_name, opname_id)
+        deleted = delete_opname_rows_by_id(
+            settings.OPNAME_EXCEL_SHARE_LINK,
+            table_name,
+            opname_id,
+            target_drive_item=target_di,
+        )
         c.execute(
             "UPDATE opname_entries SET status = 'VOID' WHERE UPPER(opname_id) = ?",
             (opname_id,),
@@ -855,9 +877,51 @@ def process_opname_message(
             ]
         )
 
+    # Resolve monthly OneDrive workbook automatically (cache in SQLite opname_workbooks)
+    target_di: tuple[str, str] | None = None
+    target_drive_id = ""
+    target_item_id = ""
+    cycle_key = f"{cycle_y:04d}-{cycle_m:02d}"
+    if settings.OPNAME_AUTO_MONTHLY:
+        try:
+            conn_wb = sqlite3.connect(settings.DB_URL)
+            cached = conn_wb.execute(
+                "SELECT drive_id, item_id FROM opname_workbooks WHERE cycle_key = ?",
+                (cycle_key,),
+            ).fetchone()
+            conn_wb.close()
+            if cached and cached[0] and cached[1]:
+                target_drive_id, target_item_id = cached[0], cached[1]
+            else:
+                target_drive_id, target_item_id, wb_web_url = ensure_monthly_opname_workbook(
+                    settings.OPNAME_EXCEL_SHARE_LINK, cycle_m, cycle_y
+                )
+                conn_wb = sqlite3.connect(settings.DB_URL)
+                conn_wb.execute(
+                    "INSERT OR REPLACE INTO opname_workbooks (cycle_key, drive_id, item_id, web_url, created_at) VALUES (?, ?, ?, ?, ?)",
+                    (cycle_key, target_drive_id, target_item_id, wb_web_url, datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")),
+                )
+                conn_wb.commit()
+                conn_wb.close()
+            target_di = (target_drive_id, target_item_id)
+        except Exception as e:
+            unmark_processed(processing_key)
+            send_whatsapp_message(reply_chat_id, f"❌ Gagal menyiapkan file Excel siklus {cycle_key}: {e}", session)
+            return
+
     try:
-        append_opname_rows(settings.OPNAME_EXCEL_SHARE_LINK, table_name, excel_rows)
+        append_opname_rows(
+            settings.OPNAME_EXCEL_SHARE_LINK,
+            table_name,
+            excel_rows,
+            target_drive_item=target_di,
+        )
     except Exception as e:
+        if settings.OPNAME_AUTO_MONTHLY:
+            conn_wb = sqlite3.connect(settings.DB_URL)
+            conn_wb.execute("DELETE FROM opname_workbooks WHERE cycle_key = ?", (cycle_key,))
+            conn_wb.commit()
+            conn_wb.close()
         unmark_processed(processing_key)
         send_whatsapp_message(reply_chat_id, f"❌ Gagal menulis data opname ke `{table_name}`: {e}", session)
         return
@@ -871,8 +935,9 @@ def process_opname_message(
             """
             INSERT INTO opname_entries (
                 opname_id, aset, wilayah, tanggal, lokasi, vendor,
-                item_key, volume, satuan, table_name, status, created_at, pic, kode_temuan
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'ACTIVE', ?, ?, ?)
+                item_key, volume, satuan, table_name, status, created_at, pic, kode_temuan,
+                drive_id, item_id
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'ACTIVE', ?, ?, ?, ?, ?)
             """,
             (
                 opname_id,
@@ -888,6 +953,8 @@ def process_opname_message(
                 created_now,
                 sender_label,
                 kode_temuan or "-",
+                target_drive_id,
+                target_item_id,
             ),
         )
     conn.commit()
@@ -1306,7 +1373,22 @@ def read_root(request: Request):
         waha_url = f"http://{ip_only}:3000"
         logs_url = f"http://{ip_only}:5001/logs"
         guide_url = f"http://{ip_only}:5001/guide"
-    
+
+    opname_excel_link = settings.OPNAME_EXCEL_SHARE_LINK or "#"
+    opname_cycle_label = "siklus 26-25"
+    if settings.OPNAME_AUTO_MONTHLY:
+        try:
+            conn_wb = sqlite3.connect(settings.DB_URL)
+            latest_wb = conn_wb.execute(
+                "SELECT cycle_key, web_url FROM opname_workbooks ORDER BY cycle_key DESC LIMIT 1"
+            ).fetchone()
+            conn_wb.close()
+            if latest_wb and latest_wb[1]:
+                opname_excel_link = latest_wb[1]
+                opname_cycle_label = f"siklus {latest_wb[0]}"
+        except Exception:
+            pass
+
     html_content = f"""
     <!DOCTYPE html>
     <html lang="id">
@@ -1486,9 +1568,9 @@ def read_root(request: Request):
                 <div class="card">
                     <div>
                         <div class="card-title">Excel Opname (Volume)</div>
-                        <p class="card-desc">Buka database volume opname bulanan (siklus 26-25) yang terhubung ke tabel log &amp; matriks W1/W2.</p>
+                        <p class="card-desc">Buka database volume opname bulanan ({opname_cycle_label}) yang terhubung ke tabel log &amp; matriks W1/W2.</p>
                     </div>
-                    <a href="{settings.OPNAME_EXCEL_SHARE_LINK or '#'}" target="_blank" class="btn excel-btn">Buka Excel Opname</a>
+                    <a href="{opname_excel_link}" target="_blank" class="btn excel-btn">Buka Excel Opname</a>
                 </div>
 
                 <!-- Card 4: FAQ & Docs -->

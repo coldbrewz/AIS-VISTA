@@ -1,3 +1,4 @@
+from datetime import date
 import os
 import base64
 import threading
@@ -9,6 +10,39 @@ from config import settings
 
 _WORKBOOK_LOCKS_GUARD = threading.Lock()
 _WORKBOOK_LOCKS: dict[str, threading.Lock] = {}
+_MONTHLY_CREATE_LOCK = threading.Lock()
+
+OPNAME_MONTH_NAMES = {
+    1: "JANUARI",
+    2: "FEBRUARI",
+    3: "MARET",
+    4: "APRIL",
+    5: "MEI",
+    6: "JUNI",
+    7: "JULI",
+    8: "AGUSTUS",
+    9: "SEPTEMBER",
+    10: "OKTOBER",
+    11: "NOVEMBER",
+    12: "DESEMBER",
+}
+
+CYCLE_START_CELLS: tuple[tuple[str, str], ...] = (
+    ("PV W1", "D7"),
+    ("PV2", "E7"),
+    ("Rambu W1", "E7"),
+    ("Rambu W2", "E7"),
+    ("GR WR W1", "E7"),
+    ("GR WR W2", "E7"),
+    ("RM LC W1", "E7"),
+    ("RMLC2", "E7"),
+    ("TRC W1", "F7"),
+    ("TRC2", "E7"),
+    ("DR W1", "D7"),
+    ("DR2", "D7"),
+    ("FE W1", "E7"),
+    ("FE2", "E7"),
+)
 
 
 def _get_workbook_lock(share_url: str) -> threading.Lock:
@@ -161,7 +195,7 @@ def upload_photo_to_onedrive(file_bytes: bytes, filename: str, folder_path: str 
     
     return link_resp.json()["link"]["webUrl"]
 
-def _resolve_share_drive_item(session, headers: dict, share_url: str) -> tuple[str, str]:
+def _resolve_share_drive_item_full(session, headers: dict, share_url: str) -> tuple[str, str, str, str]:
     encoded_url = encode_share_url(share_url)
     share_resp = session.get(
         f"https://graph.microsoft.com/v1.0/shares/{encoded_url}/driveItem",
@@ -186,7 +220,18 @@ def _resolve_share_drive_item(session, headers: dict, share_url: str) -> tuple[s
         raise Exception(
             f"Microsoft API returned an empty or invalid response. Status {share_resp.status_code}. Raw text: '{share_resp.text}'"
         )
-    return drive_item["parentReference"]["driveId"], drive_item["id"]
+    parent_ref = drive_item.get("parentReference", {})
+    return (
+        parent_ref["driveId"],
+        drive_item["id"],
+        parent_ref.get("id", ""),
+        drive_item.get("webUrl", ""),
+    )
+
+
+def _resolve_share_drive_item(session, headers: dict, share_url: str) -> tuple[str, str]:
+    drive_id, item_id, _, _ = _resolve_share_drive_item_full(session, headers, share_url)
+    return drive_id, item_id
 
 
 def update_excel_row(share_url: str, sheet_name: str, kode: str, tanggal: str, link: str, metode: str = "", panjang: str = "", lebar: str = "", tebal: str = ""):
@@ -312,17 +357,125 @@ def update_excel_row(share_url: str, sheet_name: str, kode: str, tanggal: str, l
     return True
 
 
-def append_opname_rows(share_url: str, table_name: str, rows: list[list]) -> bool:
+def _excel_serial_for_cycle(cycle_month: int, cycle_year: int) -> int:
+    start_dt = (
+        date(cycle_year - 1, 12, 26)
+        if cycle_month == 1
+        else date(cycle_year, cycle_month - 1, 26)
+    )
+    return (start_dt - date(1899, 12, 30)).days
+
+
+def ensure_monthly_opname_workbook(
+    template_share_url: str,
+    cycle_month: int,
+    cycle_year: int,
+) -> tuple[str, str, str]:
+    """
+    Find or auto-create `DATA_UNTUK_VOL_<BULAN>_<TAHUN>.xlsx` in the same OneDrive folder
+    as `template_share_url` (or fallback `/me/drive/root:/Database Opname/...`), patching row 7
+    cycle start dates across all 14 daily matrix sheets on first creation.
+    Returns `(drive_id, item_id, web_url)`.
+    """
+    if not template_share_url:
+        raise Exception("OPNAME_EXCEL_SHARE_LINK belum dikonfigurasi.")
+
+    month_label = OPNAME_MONTH_NAMES[cycle_month]
+    filename = f"DATA_UNTUK_VOL_{month_label}_{cycle_year}.xlsx"
+
+    with _MONTHLY_CREATE_LOCK:
+        token = get_ms_token()
+        session = get_retry_session()
+        headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
+
+        src_drive_id, src_item_id, parent_id, _ = _resolve_share_drive_item_full(
+            session, headers, template_share_url
+        )
+
+        # 1. Check same folder where the base template sits
+        if parent_id:
+            lookup_url = f"https://graph.microsoft.com/v1.0/drives/{src_drive_id}/items/{parent_id}:/{filename}"
+            chk = session.get(lookup_url, headers=headers, timeout=20)
+            if chk.status_code == 200:
+                meta = chk.json()
+                return meta["parentReference"]["driveId"], meta["id"], meta.get("webUrl", "")
+
+        # Also check fallback folder in user's own drive
+        me_lookup_url = f"https://graph.microsoft.com/v1.0/me/drive/root:/Database Opname/{filename}"
+        chk_me = session.get(me_lookup_url, headers=headers, timeout=20)
+        if chk_me.status_code == 200:
+            meta = chk_me.json()
+            return meta["parentReference"]["driveId"], meta["id"], meta.get("webUrl", "")
+
+        # 2. Download clean template bytes and upload as the new monthly workbook
+        dl_url = f"https://graph.microsoft.com/v1.0/drives/{src_drive_id}/items/{src_item_id}/content"
+        dl_resp = session.get(dl_url, headers={"Authorization": f"Bearer {token}"}, timeout=60)
+        dl_resp.raise_for_status()
+        template_bytes = dl_resp.content
+
+        up_headers = {
+            "Authorization": f"Bearer {get_ms_token()}",
+            "Content-Type": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        }
+        up_resp = None
+        if parent_id:
+            up_url = f"https://graph.microsoft.com/v1.0/drives/{src_drive_id}/items/{parent_id}:/{filename}:/content"
+            up_resp = session.put(up_url, headers=up_headers, data=template_bytes, timeout=60)
+        if up_resp is None or up_resp.status_code in (401, 403, 404):
+            up_resp = session.put(f"{me_lookup_url}:/content", headers=up_headers, data=template_bytes, timeout=60)
+        up_resp.raise_for_status()
+        new_meta = up_resp.json()
+        new_drive_id = new_meta["parentReference"]["driveId"]
+        new_item_id = new_meta["id"]
+        new_web_url = new_meta.get("webUrl", "")
+
+        # 3. Initialize 26th..25th start dates on all 14 daily matrix sheets
+        serial_val = _excel_serial_for_cycle(cycle_month, cycle_year)
+        xl_headers = {
+            "Authorization": f"Bearer {get_ms_token()}",
+            "Content-Type": "application/json",
+        }
+        sess_url = f"https://graph.microsoft.com/v1.0/drives/{new_drive_id}/items/{new_item_id}/workbook/createSession"
+        sess_resp = session.post(sess_url, headers=xl_headers, json={"persistChanges": True}, timeout=60)
+        sess_resp.raise_for_status()
+        xl_headers["workbook-session-id"] = sess_resp.json().get("id")
+        try:
+            for sheet_name, cell_ref in CYCLE_START_CELLS:
+                patch_url = (
+                    f"https://graph.microsoft.com/v1.0/drives/{new_drive_id}/items/{new_item_id}"
+                    f"/workbook/worksheets/{sheet_name}/range(address='{cell_ref}')"
+                )
+                session.patch(patch_url, headers=xl_headers, json={"values": [[serial_val]]}, timeout=15)
+        finally:
+            try:
+                session.post(
+                    f"https://graph.microsoft.com/v1.0/drives/{new_drive_id}/items/{new_item_id}/workbook/closeSession",
+                    headers=xl_headers,
+                    timeout=10,
+                )
+            except Exception:
+                pass
+
+        return new_drive_id, new_item_id, new_web_url
+
+
+def append_opname_rows(
+    share_url: str,
+    table_name: str,
+    rows: list[list],
+    target_drive_item: tuple[str, str] | None = None,
+) -> bool:
     """
     Append one or more 21-column rows to an Excel Table (`TBL_LOG_*`) inside a persisted workbook session
     guarded by a per-workbook lock.
     """
     if not rows:
         return True
-    if not share_url:
+    if not share_url and not target_drive_item:
         raise Exception("OPNAME_EXCEL_SHARE_LINK belum dikonfigurasi.")
 
-    lock = _get_workbook_lock(share_url)
+    lock_key = f"{target_drive_item[0]}:{target_drive_item[1]}" if target_drive_item else share_url
+    lock = _get_workbook_lock(lock_key)
     with lock:
         token = get_ms_token()
         session = get_retry_session()
@@ -330,7 +483,10 @@ def append_opname_rows(share_url: str, table_name: str, rows: list[list]) -> boo
             "Authorization": f"Bearer {token}",
             "Content-Type": "application/json",
         }
-        drive_id, item_id = _resolve_share_drive_item(session, headers, share_url)
+        if target_drive_item:
+            drive_id, item_id = target_drive_item
+        else:
+            drive_id, item_id = _resolve_share_drive_item(session, headers, share_url)
 
         session_url = f"https://graph.microsoft.com/v1.0/drives/{drive_id}/items/{item_id}/workbook/createSession"
         session_resp = session.post(session_url, headers=headers, json={"persistChanges": True}, timeout=60)
@@ -360,15 +516,21 @@ def append_opname_rows(share_url: str, table_name: str, rows: list[list]) -> boo
     return True
 
 
-def delete_opname_rows_by_id(share_url: str, table_name: str, opname_id: str) -> int:
+def delete_opname_rows_by_id(
+    share_url: str,
+    table_name: str,
+    opname_id: str,
+    target_drive_item: tuple[str, str] | None = None,
+) -> int:
     """
     Delete all rows matching `opname_id` (col 0) from `table_name` for `/undo <OPN-ID>`.
     Deletes bottom-to-top so indices stay valid. Returns count deleted.
     """
-    if not share_url or not opname_id:
+    if (not share_url and not target_drive_item) or not opname_id:
         return 0
 
-    lock = _get_workbook_lock(share_url)
+    lock_key = f"{target_drive_item[0]}:{target_drive_item[1]}" if target_drive_item else share_url
+    lock = _get_workbook_lock(lock_key)
     deleted = 0
     with lock:
         token = get_ms_token()
@@ -377,7 +539,10 @@ def delete_opname_rows_by_id(share_url: str, table_name: str, opname_id: str) ->
             "Authorization": f"Bearer {token}",
             "Content-Type": "application/json",
         }
-        drive_id, item_id = _resolve_share_drive_item(session, headers, share_url)
+        if target_drive_item:
+            drive_id, item_id = target_drive_item
+        else:
+            drive_id, item_id = _resolve_share_drive_item(session, headers, share_url)
         session_url = f"https://graph.microsoft.com/v1.0/drives/{drive_id}/items/{item_id}/workbook/createSession"
         session_resp = session.post(session_url, headers=headers, json={"persistChanges": True}, timeout=60)
         session_resp.raise_for_status()
