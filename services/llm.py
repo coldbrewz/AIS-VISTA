@@ -208,3 +208,93 @@ return exactly:
         return None, f"Failed to parse JSON from LLM: {raw_content}"
     except Exception as e:
         return None, f"LLM Error: {str(e)}"
+
+
+def extract_opname_watermark_and_items(
+    image_bytes: bytes,
+    caption: str,
+    fallback_date: str,
+    aset: str,
+    boq_menu_text: str,
+    need_date: bool = True,
+    need_items: bool = False,
+) -> tuple[dict, str]:
+    """
+    Lightweight LLM helper for Opname:
+      - Skips network LLM call completely (0 tokens) when both `Tanggal` and structured BOQ codes are already present.
+      - Otherwise extracts camera watermark date (YYYY-MM-DD) and/or maps ambiguous item lines strictly to `boq_menu_text`.
+    Returns: ({"tanggal": "YYYY-MM-DD", "items": [{"item_key": ..., "volume": ...}]}, error_str)
+    """
+    if not need_date and not need_items:
+        return {"tanggal": fallback_date, "items": []}, ""
+
+    if not settings.VIKEY_API_KEY:
+        if not need_items:
+            return {"tanggal": fallback_date, "items": []}, ""
+        return {}, "LLM client not configured. Please set VIKEY_API_KEY in .env."
+
+    task_parts = []
+    if need_date:
+        task_parts.append(
+            f"- tanggal: read date from photo camera watermark (e.g. Marki / GPS Map Camera) in YYYY-MM-DD format. "
+            f"If unreadable or absent, use {fallback_date}."
+        )
+    if need_items:
+        task_parts.append(
+            f"- items: map the caption's uncoded work item descriptions to exact `item_key` from the official {aset} BOQ menu below ONLY if explicitly stated in the caption. NEVER invent items not mentioned in the caption.\n"
+            f"BOQ MENU ({aset}):\n{boq_menu_text}"
+        )
+
+    prompt = (
+        f"You are assisting toll road opname data entry for asset {aset}.\n"
+        f"Rules:\n" + "\n".join(task_parts) + "\n"
+        f"Return valid JSON only (no markdown, no explanation):\n"
+        f'{{"tanggal": "YYYY-MM-DD", "items": [{{"item_key": "...", "volume": 0.0, "satuan": ""}}]}}\n\n'
+        f"Caption:\n{caption}"
+    )
+
+    b64_image = prepare_image_for_llm(image_bytes)
+    headers = {
+        "Content-Type": "application/json",
+        "Authorization": f"Bearer {settings.VIKEY_API_KEY}",
+    }
+    body = {
+        "model": settings.VIKEY_MODEL,
+        "messages": [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": prompt},
+                    {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{b64_image}"}},
+                ],
+            }
+        ],
+        "temperature": 0.0,
+    }
+
+    for attempt in range(3):
+        try:
+            resp = requests.post(settings.VIKEY_BASE_URL, headers=headers, json=body, timeout=45)
+            if resp.status_code in [429, 500, 502, 503, 504] and attempt < 2:
+                time.sleep(2)
+                continue
+            if resp.status_code != 200:
+                if not need_items:
+                    return {"tanggal": fallback_date, "items": []}, ""
+                return {}, f"LLM API Error ({resp.status_code}): {resp.text}"
+            data_json = resp.json()
+            raw_content = data_json.get("choices", [{}])[0].get("message", {}).get("content", "")
+            if not raw_content:
+                break
+            parsed = json.loads(extract_json_str(raw_content))
+            return parsed if isinstance(parsed, dict) else {}, ""
+        except Exception as e:
+            if attempt == 2:
+                if not need_items:
+                    return {"tanggal": fallback_date, "items": []}, ""
+                return {}, f"LLM Error: {e}"
+            time.sleep(2)
+
+    if not need_items:
+        return {"tanggal": fallback_date, "items": []}, ""
+    return {}, "Failed to extract opname fields from LLM."

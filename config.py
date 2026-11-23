@@ -25,6 +25,9 @@ class Settings(BaseSettings):
     MICROSOFT_CLIENT_SECRET: str = ""
     
     EXCEL_SHARE_LINK: str = ""
+    OPNAME_EXCEL_SHARE_LINK: str = ""
+    OPNAME_ENABLED: bool = True
+    OPNAME_CYCLE_YEAR: int = 2026
 
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
 

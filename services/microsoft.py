@@ -1,10 +1,23 @@
 import os
 import base64
+import threading
 import requests
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 import msal
 from config import settings
+
+_WORKBOOK_LOCKS_GUARD = threading.Lock()
+_WORKBOOK_LOCKS: dict[str, threading.Lock] = {}
+
+
+def _get_workbook_lock(share_url: str) -> threading.Lock:
+    with _WORKBOOK_LOCKS_GUARD:
+        lock = _WORKBOOK_LOCKS.get(share_url)
+        if lock is None:
+            lock = threading.Lock()
+            _WORKBOOK_LOCKS[share_url] = lock
+        return lock
 
 def num_to_col_letter(n):
     string = ""
@@ -148,18 +161,13 @@ def upload_photo_to_onedrive(file_bytes: bytes, filename: str, folder_path: str 
     
     return link_resp.json()["link"]["webUrl"]
 
-def update_excel_row(share_url: str, sheet_name: str, kode: str, tanggal: str, link: str, metode: str = "", panjang: str = "", lebar: str = "", tebal: str = ""):
-    token = get_ms_token()
-    session = get_retry_session()
-    headers = {
-        "Authorization": f"Bearer {token}",
-        "Content-Type": "application/json"
-    }
-    
+def _resolve_share_drive_item(session, headers: dict, share_url: str) -> tuple[str, str]:
     encoded_url = encode_share_url(share_url)
-    share_resp = session.get(f"https://graph.microsoft.com/v1.0/shares/{encoded_url}/driveItem", headers=headers, allow_redirects=False)
-    
-    # Robustly follow all redirects (Microsoft Graph heavily uses 308 redirects across tenants)
+    share_resp = session.get(
+        f"https://graph.microsoft.com/v1.0/shares/{encoded_url}/driveItem",
+        headers=headers,
+        allow_redirects=False,
+    )
     redirects = 0
     while share_resp.status_code in [301, 302, 303, 307, 308] and redirects < 5:
         redirect_url = share_resp.headers.get("Location")
@@ -167,15 +175,29 @@ def update_excel_row(share_url: str, sheet_name: str, kode: str, tanggal: str, l
             break
         share_resp = session.get(redirect_url, headers=headers, allow_redirects=False)
         redirects += 1
-            
+
     if share_resp.status_code not in [200, 201]:
-        raise Exception(f"Microsoft API blocked the link. Status {share_resp.status_code}. Response: {share_resp.text}")
+        raise Exception(
+            f"Microsoft API blocked the link. Status {share_resp.status_code}. Response: {share_resp.text}"
+        )
     try:
         drive_item = share_resp.json()
     except Exception:
-        raise Exception(f"Microsoft API returned an empty or invalid response. Status {share_resp.status_code}. Raw text: '{share_resp.text}'")
-    drive_id = drive_item["parentReference"]["driveId"]
-    item_id = drive_item["id"]
+        raise Exception(
+            f"Microsoft API returned an empty or invalid response. Status {share_resp.status_code}. Raw text: '{share_resp.text}'"
+        )
+    return drive_item["parentReference"]["driveId"], drive_item["id"]
+
+
+def update_excel_row(share_url: str, sheet_name: str, kode: str, tanggal: str, link: str, metode: str = "", panjang: str = "", lebar: str = "", tebal: str = ""):
+    token = get_ms_token()
+    session = get_retry_session()
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "Content-Type": "application/json"
+    }
+
+    drive_id, item_id = _resolve_share_drive_item(session, headers, share_url)
     
     # 1. Skip usedRange entirely! It takes up to 90s (30s x 3 retries) to fail on large files.
     # We know Kode is always in column A, and headers are within A to AZ.
@@ -288,3 +310,170 @@ def update_excel_row(share_url: str, sheet_name: str, kode: str, tanggal: str, l
             print(f"Warning: Failed to close Excel session: {e}")
 
     return True
+
+
+def append_opname_rows(share_url: str, table_name: str, rows: list[list]) -> bool:
+    """
+    Append one or more 21-column rows to an Excel Table (`TBL_LOG_*`) inside a persisted workbook session
+    guarded by a per-workbook lock.
+    """
+    if not rows:
+        return True
+    if not share_url:
+        raise Exception("OPNAME_EXCEL_SHARE_LINK belum dikonfigurasi.")
+
+    lock = _get_workbook_lock(share_url)
+    with lock:
+        token = get_ms_token()
+        session = get_retry_session()
+        headers = {
+            "Authorization": f"Bearer {token}",
+            "Content-Type": "application/json",
+        }
+        drive_id, item_id = _resolve_share_drive_item(session, headers, share_url)
+
+        session_url = f"https://graph.microsoft.com/v1.0/drives/{drive_id}/items/{item_id}/workbook/createSession"
+        session_resp = session.post(session_url, headers=headers, json={"persistChanges": True}, timeout=60)
+        session_resp.raise_for_status()
+        workbook_session_id = session_resp.json().get("id")
+        headers["workbook-session-id"] = workbook_session_id
+
+        try:
+            fresh_token = get_ms_token()
+            headers["Authorization"] = f"Bearer {fresh_token}"
+            add_url = (
+                f"https://graph.microsoft.com/v1.0/drives/{drive_id}/items/{item_id}"
+                f"/workbook/tables/{table_name}/rows/add"
+            )
+            resp = session.post(add_url, headers=headers, json={"values": rows}, timeout=45)
+            if not resp.ok:
+                raise Exception(
+                    f"Gagal append ke tabel {table_name} ({resp.status_code}): {resp.text}"
+                )
+        finally:
+            try:
+                close_url = f"https://graph.microsoft.com/v1.0/drives/{drive_id}/items/{item_id}/workbook/closeSession"
+                session.post(close_url, headers=headers, timeout=10)
+            except Exception as e:
+                print(f"Warning: Failed to close Excel Opname session: {e}")
+
+    return True
+
+
+def delete_opname_rows_by_id(share_url: str, table_name: str, opname_id: str) -> int:
+    """
+    Delete all rows matching `opname_id` (col 0) from `table_name` for `/undo <OPN-ID>`.
+    Deletes bottom-to-top so indices stay valid. Returns count deleted.
+    """
+    if not share_url or not opname_id:
+        return 0
+
+    lock = _get_workbook_lock(share_url)
+    deleted = 0
+    with lock:
+        token = get_ms_token()
+        session = get_retry_session()
+        headers = {
+            "Authorization": f"Bearer {token}",
+            "Content-Type": "application/json",
+        }
+        drive_id, item_id = _resolve_share_drive_item(session, headers, share_url)
+        session_url = f"https://graph.microsoft.com/v1.0/drives/{drive_id}/items/{item_id}/workbook/createSession"
+        session_resp = session.post(session_url, headers=headers, json={"persistChanges": True}, timeout=60)
+        session_resp.raise_for_status()
+        headers["workbook-session-id"] = session_resp.json().get("id")
+
+        try:
+            rows_url = (
+                f"https://graph.microsoft.com/v1.0/drives/{drive_id}/items/{item_id}"
+                f"/workbook/tables/{table_name}/rows"
+            )
+            list_resp = session.get(rows_url, headers=headers, timeout=30)
+            list_resp.raise_for_status()
+            rows_data = list_resp.json().get("value", [])
+
+            target_upper = opname_id.strip().upper()
+            matching_indices = []
+            for row_obj in rows_data:
+                vals = row_obj.get("values", [[]])
+                if vals and vals[0] and str(vals[0][0]).strip().upper() == target_upper:
+                    matching_indices.append(row_obj["index"])
+
+            for idx in sorted(matching_indices, reverse=True):
+                del_url = f"{rows_url}/itemAt(index={idx})"
+                del_resp = session.delete(del_url, headers=headers, timeout=20)
+                if del_resp.ok:
+                    deleted += 1
+        finally:
+            try:
+                close_url = f"https://graph.microsoft.com/v1.0/drives/{drive_id}/items/{item_id}/workbook/closeSession"
+                session.post(close_url, headers=headers, timeout=10)
+            except Exception as e:
+                print(f"Warning: Failed to close Excel Opname session on undo: {e}")
+
+    return deleted
+
+
+def lookup_sla_location(share_url: str, sheet_name: str, kode: str) -> tuple[str, str] | None:
+    """
+    Optional lookup into SLA workbook when a PIC submits `Opname: <KODE_TEMUAN>` without typing `Lokasi:`.
+    Returns `(lokasi, jalur_lajur)` if found, else `None`.
+    """
+    if not share_url or not kode:
+        return None
+    try:
+        token = get_ms_token()
+        session = get_retry_session()
+        headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
+        drive_id, item_id = _resolve_share_drive_item(session, headers, share_url)
+
+        session_url = f"https://graph.microsoft.com/v1.0/drives/{drive_id}/items/{item_id}/workbook/createSession"
+        session_resp = session.post(session_url, headers=headers, json={"persistChanges": False}, timeout=45)
+        session_resp.raise_for_status()
+        headers["workbook-session-id"] = session_resp.json().get("id")
+        try:
+            safe_sheet = f"'{sheet_name}'" if " " in sheet_name else sheet_name
+            match_url = f"https://graph.microsoft.com/v1.0/drives/{drive_id}/items/{item_id}/workbook/functions/match"
+            match_resp = session.post(
+                match_url,
+                headers=headers,
+                json={"lookupValue": kode.strip(), "lookupArray": {"address": f"{safe_sheet}!A1:A100000"}, "matchType": 0},
+                timeout=25,
+            )
+            if not match_resp.ok:
+                return None
+            match_val = match_resp.json().get("value")
+            if not isinstance(match_val, int):
+                return None
+
+            row_num = match_val
+            hdr_url = f"https://graph.microsoft.com/v1.0/drives/{drive_id}/items/{item_id}/workbook/worksheets/{sheet_name}/range(address='A4:BZ4')"
+            hdr_vals = session.get(hdr_url, headers=headers, timeout=15).json().get("values", [[]])[0]
+            row_url = f"https://graph.microsoft.com/v1.0/drives/{drive_id}/items/{item_id}/workbook/worksheets/{sheet_name}/range(address='A{row_num}:BZ{row_num}')"
+            row_vals = session.get(row_url, headers=headers, timeout=15).json().get("values", [[]])[0]
+
+            def pick(candidates):
+                for idx, h in enumerate(hdr_vals):
+                    hu = str(h).strip().upper()
+                    if any(c in hu for c in candidates) and idx < len(row_vals):
+                        v = str(row_vals[idx]).strip()
+                        if v:
+                            return v
+                return ""
+
+            awal = pick(["AWAL", "LOKASI", "KM"])
+            jalur = pick(["JALUR", "LAJUR"])
+            if awal:
+                return awal, jalur
+        finally:
+            try:
+                session.post(
+                    f"https://graph.microsoft.com/v1.0/drives/{drive_id}/items/{item_id}/workbook/closeSession",
+                    headers=headers,
+                    timeout=10,
+                )
+            except Exception:
+                pass
+    except Exception:
+        return None
+    return None

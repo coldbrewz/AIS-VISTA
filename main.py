@@ -1,5 +1,6 @@
 import asyncio
 import subprocess
+import uuid
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, Request, HTTPException, Query, Response, BackgroundTasks
 import requests
@@ -8,10 +9,34 @@ import re
 import time
 import sqlite3
 from config import settings
-from services.llm import extract_sla_data
-from services.message_utils import extract_kode_from_text, extract_message_id, resolve_media_download_url, resolve_reply_chat_id, reconcile_date_with_message_time
+from services.llm import extract_opname_watermark_and_items, extract_sla_data
+from services.message_utils import (
+    extract_kode_from_text,
+    extract_message_id,
+    extract_opname_trigger,
+    parse_structured_opname_caption,
+    reconcile_date_with_message_time,
+    resolve_billing_cycle,
+    resolve_media_download_url,
+    resolve_reply_chat_id,
+)
+from services.opname_catalog import (
+    ASSET_TO_TABLE,
+    format_boq_cheat_sheet,
+    format_wa_template,
+    normalize_asset_code,
+    normalize_vendor,
+    resolve_boq_item,
+    resolve_wilayah,
+)
 from services.whatsapp import send_whatsapp_message
-from services.microsoft import update_excel_row, upload_photo_to_onedrive
+from services.microsoft import (
+    append_opname_rows,
+    delete_opname_rows_by_id,
+    lookup_sla_location,
+    update_excel_row,
+    upload_photo_to_onedrive,
+)
 
 import logging
 from logging.handlers import RotatingFileHandler
@@ -469,6 +494,22 @@ def init_db():
                  date TEXT,
                  UNIQUE(kode, date)
                  )''')
+    c.execute('''CREATE TABLE IF NOT EXISTS opname_entries (
+                 opname_id TEXT,
+                 aset TEXT,
+                 wilayah TEXT,
+                 tanggal TEXT,
+                 lokasi TEXT,
+                 vendor TEXT,
+                 item_key TEXT,
+                 volume REAL,
+                 satuan TEXT,
+                 table_name TEXT,
+                 status TEXT DEFAULT 'ACTIVE',
+                 created_at TEXT,
+                 pic TEXT,
+                 kode_temuan TEXT
+                 )''')
     conn.commit()
     conn.close()
 
@@ -495,6 +536,378 @@ def download_whatsapp_media(media_url: str) -> bytes:
     resp = requests.get(media_url, headers=headers, timeout=30)
     resp.raise_for_status()
     return resp.content
+
+
+def _extract_image_bytes_from_message(message: dict) -> bytes:
+    raw_data_body = message.get("_data", {}).get("body", "")
+    if raw_data_body and isinstance(raw_data_body, str) and (
+        raw_data_body.startswith("/9j/") or raw_data_body.startswith("iVBORw0K")
+    ):
+        import base64
+        return base64.b64decode(raw_data_body)
+
+    internal_media_url = resolve_media_download_url(message, settings.WAHA_URL)
+    if not internal_media_url:
+        raise Exception(
+            "WAHA webhook did not provide a usable media URL or message ID, so the photo cannot be downloaded. Please resend the photo."
+        )
+    return download_whatsapp_media(internal_media_url)
+
+
+def handle_format_command(reply_chat_id: str, body_text: str, session: str):
+    parts = body_text.strip().split(None, 1)
+    aset_arg = parts[1].strip() if len(parts) > 1 else None
+    send_whatsapp_message(reply_chat_id, format_wa_template(aset_arg), session)
+
+
+def handle_undo_command(reply_chat_id: str, body_text: str, session: str):
+    parts = body_text.strip().split()
+    if len(parts) < 2:
+        send_whatsapp_message(
+            reply_chat_id,
+            "❌ Format salah. Ketik `/undo OPN-XXXXXX` sesuai ID pada balasan opname.",
+            session,
+        )
+        return
+    opname_id = parts[1].strip().upper()
+    conn = sqlite3.connect(settings.DB_URL)
+    c = conn.cursor()
+    c.execute(
+        "SELECT DISTINCT table_name FROM opname_entries WHERE UPPER(opname_id) = ? AND status = 'ACTIVE'",
+        (opname_id,),
+    )
+    rows = c.fetchall()
+    if not rows:
+        conn.close()
+        send_whatsapp_message(
+            reply_chat_id,
+            f"⚠️ Data opname `{opname_id}` tidak ditemukan atau sudah dibatalkan.",
+            session,
+        )
+        return
+    table_name = rows[0][0]
+    try:
+        deleted = delete_opname_rows_by_id(settings.OPNAME_EXCEL_SHARE_LINK, table_name, opname_id)
+        c.execute(
+            "UPDATE opname_entries SET status = 'VOID' WHERE UPPER(opname_id) = ?",
+            (opname_id,),
+        )
+        conn.commit()
+        conn.close()
+        send_whatsapp_message(
+            reply_chat_id,
+            f"🗑️ *Opname Dibatalkan*\nID: `{opname_id}`\nBaris dihapus di `{table_name}`: {deleted}",
+            session,
+        )
+    except Exception as e:
+        conn.close()
+        send_whatsapp_message(reply_chat_id, f"❌ Gagal /undo `{opname_id}`: {e}", session)
+
+
+def handle_rekap_opname_command(reply_chat_id: str, text_lower: str, session: str):
+    now = datetime.datetime.now()
+    target_date = now.strftime("%Y-%m-%d")
+    m_date = re.search(r"(\d{4}-\d{2}-\d{2})", text_lower)
+    m_dmy = re.search(r"(\d{1,2})[-/](\d{1,2})[-/](\d{4})", text_lower)
+    if m_date:
+        target_date = m_date.group(1)
+    elif m_dmy:
+        target_date = f"{int(m_dmy.group(3)):04d}-{int(m_dmy.group(2)):02d}-{int(m_dmy.group(1)):02d}"
+
+    conn = sqlite3.connect(settings.DB_URL)
+    c = conn.cursor()
+    c.execute(
+        """
+        SELECT wilayah, aset, COUNT(DISTINCT opname_id), SUM(volume), satuan
+        FROM opname_entries
+        WHERE status = 'ACTIVE' AND tanggal = ?
+        GROUP BY wilayah, aset, satuan
+        ORDER BY wilayah, aset
+        """,
+        (target_date,),
+    )
+    rows = c.fetchall()
+    conn.close()
+
+    if not rows:
+        send_whatsapp_message(
+            reply_chat_id,
+            f"📊 *REKAP OPNAME ({target_date})*\nBelum ada data opname tercatat pada tanggal ini.",
+            session,
+        )
+        return
+
+    lines = [f"📊 *REKAP OPNAME HARIAN ({target_date})*\n"]
+    cur_w = None
+    for wil, aset, cnt, vol, sat in rows:
+        if wil != cur_w:
+            lines.append(f"*{wil}*")
+            cur_w = wil
+        vol_fmt = f"{vol:,.2f}".rstrip("0").rstrip(".")
+        lines.append(f"- {aset}: {cnt} laporan | {vol_fmt} {sat}")
+    send_whatsapp_message(reply_chat_id, "\n".join(lines), session)
+
+
+def process_opname_message(
+    message: dict,
+    reply_chat_id: str,
+    sender_label: str,
+    caption: str,
+    trigger: dict,
+    processing_key: str,
+    session: str,
+):
+    if not settings.OPNAME_ENABLED:
+        return
+
+    aset = trigger["aset"]
+    kode_temuan = trigger["kode_temuan"]
+
+    # Guardrail 1: Photo is mandatory
+    if not message.get("hasMedia"):
+        send_whatsapp_message(
+            reply_chat_id,
+            f"⚠️ *Opname Ditolak ({aset})*\nFoto lapangan wajib dilampirkan pada pesan opname.\n\n{format_wa_template(aset)}",
+            session,
+        )
+        return
+
+    parsed = parse_structured_opname_caption(caption)
+
+    # Guardrail 2: Vendor is mandatory (no silent default)
+    v_ok, canonical_vendor, v_err = normalize_vendor(parsed["vendor"], aset)
+    if not v_ok or not canonical_vendor:
+        send_whatsapp_message(
+            reply_chat_id,
+            f"⚠️ *Opname Ditolak ({aset})*\n{v_err}\n\nKetik `/format {aset}` untuk lihat contoh.",
+            session,
+        )
+        return
+
+    # Guardrail 3: Lokasi (try SLA lookup if kode_temuan provided without Lokasi) -> Wilayah W1/W2
+    lokasi = parsed["lokasi"]
+    jalur_lajur = parsed["jalur_lajur"]
+    if not lokasi and kode_temuan and settings.EXCEL_SHARE_LINK:
+        sla_loc = lookup_sla_location(settings.EXCEL_SHARE_LINK, aset, kode_temuan)
+        if sla_loc:
+            lokasi, jalur_sla = sla_loc
+            if not jalur_lajur:
+                jalur_lajur = jalur_sla
+
+    w_ok, wilayah, _, w_err = resolve_wilayah(lokasi)
+    if not w_ok or not wilayah:
+        send_whatsapp_message(
+            reply_chat_id,
+            f"⚠️ *Opname Ditolak ({aset})*\n{w_err}\n\nKetik `/format {aset}` untuk lihat contoh.",
+            session,
+        )
+        return
+
+    timestamp_unix = message.get("timestamp", "")
+    try:
+        msg_dt = (
+            datetime.datetime.fromtimestamp(int(timestamp_unix))
+            if timestamp_unix
+            else datetime.datetime.now()
+        )
+    except Exception:
+        msg_dt = datetime.datetime.now()
+    fallback_date = msg_dt.strftime("%Y-%m-%d")
+
+    try:
+        img_bytes = _extract_image_bytes_from_message(message)
+    except Exception as dl_err:
+        unmark_processed(processing_key)
+        send_whatsapp_message(reply_chat_id, f"❌ Gagal mengunduh foto opname: {dl_err}", session)
+        return
+
+    # Guardrail 4: Deterministic BOQ item resolution FIRST; LLM only when date omitted or item phrase needs resolution
+    resolved_items = []
+    item_errors = []
+    for raw_entry in parsed["items"]:
+        boq_item, b_err = resolve_boq_item(aset, raw_entry["raw_item"], lokasi=lokasi, wilayah=wilayah)
+        if not boq_item:
+            item_errors.append(f"- `{raw_entry['raw_item']}`: {b_err}")
+            continue
+        vol = raw_entry.get("volume")
+        if vol is None or vol <= 0:
+            item_errors.append(f"- `{raw_entry['raw_item']}`: volume tidak valid ({raw_entry}).")
+            continue
+        resolved_items.append(
+            {
+                "item": boq_item,
+                "p": raw_entry.get("p"),
+                "l": raw_entry.get("l"),
+                "t": raw_entry.get("t"),
+                "jumlah": raw_entry.get("jumlah"),
+                "volume": float(vol),
+                "satuan": raw_entry.get("satuan") or boq_item.satuan,
+                "material_status": raw_entry.get("material_status") or "",
+            }
+        )
+
+    need_date = not bool(parsed["tanggal"])
+    need_items = bool(parsed["unparsed_item_lines"]) or (not resolved_items and not item_errors)
+
+    tanggal_final = parsed["tanggal"] or fallback_date
+    if need_date or need_items:
+        llm_res, llm_err = extract_opname_watermark_and_items(
+            img_bytes,
+            caption,
+            fallback_date,
+            aset,
+            format_boq_cheat_sheet(aset, max_items=35),
+            need_date=need_date,
+            need_items=need_items,
+        )
+        if need_date and llm_res.get("tanggal"):
+            norm_dt = parse_opname_date_str(str(llm_res["tanggal"]))
+            if norm_dt:
+                tanggal_final = norm_dt
+        if need_items and llm_res.get("items"):
+            for llm_it in llm_res["items"]:
+                boq_item, b_err = resolve_boq_item(
+                    aset, str(llm_it.get("item_key", "")), lokasi=lokasi, wilayah=wilayah
+                )
+                try:
+                    vol = float(llm_it.get("volume", 0))
+                except (TypeError, ValueError):
+                    vol = 0.0
+                if boq_item and vol > 0:
+                    resolved_items.append(
+                        {
+                            "item": boq_item,
+                            "p": None,
+                            "l": None,
+                            "t": None,
+                            "jumlah": None,
+                            "volume": vol,
+                            "satuan": str(llm_it.get("satuan") or boq_item.satuan),
+                            "material_status": "",
+                        }
+                    )
+        if llm_err and not resolved_items:
+            item_errors.append(llm_err)
+
+    if item_errors or not resolved_items:
+        detail = "\n".join(item_errors) if item_errors else "Tidak ada item BOQ valid pada bagian `Item:`."
+        send_whatsapp_message(
+            reply_chat_id,
+            f"⚠️ *Opname Ditolak ({aset})*\n{detail}\n\nKetik `/format {aset}` untuk daftar keyword item resmi.",
+            session,
+        )
+        return
+
+    if not settings.OPNAME_EXCEL_SHARE_LINK:
+        send_whatsapp_message(
+            reply_chat_id,
+            "❌ `OPNAME_EXCEL_SHARE_LINK` belum diatur di server bot.",
+            session,
+        )
+        return
+
+    dt_final = datetime.datetime.strptime(tanggal_final, "%Y-%m-%d")
+    cycle_m, cycle_y = resolve_billing_cycle(dt_final)
+    _, table_name, _ = ASSET_TO_TABLE[aset]
+    opname_id = f"OPN-{dt_final:%y%m%d}-{uuid.uuid4().hex[:6].upper()}"
+
+    month_names = [
+        "Januari", "Februari", "Maret", "April", "Mei", "Juni",
+        "Juli", "Agustus", "September", "Oktober", "November", "Desember",
+    ]
+    folder_path = f"Dokumentasi Opname/{aset}/{dt_final.year}/{month_names[dt_final.month - 1]}/{dt_final.day:02d}"
+
+    try:
+        link_foto = upload_photo_to_onedrive(img_bytes, f"{opname_id}.jpg", folder_path=folder_path)
+    except Exception as e:
+        unmark_processed(processing_key)
+        send_whatsapp_message(reply_chat_id, f"❌ Gagal upload foto opname ke OneDrive: {e}", session)
+        return
+
+    excel_rows = []
+    for entry in resolved_items:
+        it = entry["item"]
+        has_dims = any(entry[k] is not None for k in ("p", "l", "t", "jumlah"))
+        vol_cell = "=[@[Volume_Calc]]" if has_dims else entry["volume"]
+        excel_rows.append(
+            [
+                opname_id,
+                kode_temuan or "-",
+                tanggal_final,
+                aset,
+                wilayah,
+                lokasi,
+                jalur_lajur,
+                canonical_vendor,
+                it.item_key,
+                it.uraian,
+                entry["p"],
+                entry["l"],
+                entry["t"],
+                entry["jumlah"],
+                '=IF(COUNT([@P]:[@Jumlah])>0,PRODUCT([@P]:[@Jumlah]),"")',
+                vol_cell,
+                entry["satuan"],
+                entry["material_status"],
+                sender_label,
+                link_foto,
+                parsed["keterangan"],
+            ]
+        )
+
+    try:
+        append_opname_rows(settings.OPNAME_EXCEL_SHARE_LINK, table_name, excel_rows)
+    except Exception as e:
+        unmark_processed(processing_key)
+        send_whatsapp_message(reply_chat_id, f"❌ Gagal menulis data opname ke `{table_name}`: {e}", session)
+        return
+
+    conn = sqlite3.connect(settings.DB_URL)
+    c = conn.cursor()
+    created_now = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    for entry in resolved_items:
+        it = entry["item"]
+        c.execute(
+            """
+            INSERT INTO opname_entries (
+                opname_id, aset, wilayah, tanggal, lokasi, vendor,
+                item_key, volume, satuan, table_name, status, created_at, pic, kode_temuan
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'ACTIVE', ?, ?, ?)
+            """,
+            (
+                opname_id,
+                aset,
+                wilayah,
+                tanggal_final,
+                lokasi,
+                canonical_vendor,
+                it.item_key,
+                entry["volume"],
+                entry["satuan"],
+                table_name,
+                created_now,
+                sender_label,
+                kode_temuan or "-",
+            ),
+        )
+    conn.commit()
+    conn.close()
+
+    item_summary = "\n".join(
+        f"  • *{e['item'].keyword}* (`{e['item'].item_key}`): *{e['volume']:g} {e['satuan']}*"
+        for e in resolved_items
+    )
+    msg = (
+        f"✅ *Opname Berhasil Dicatat*\n"
+        f"ID: `{opname_id}`\n"
+        f"Tanggal: {tanggal_final} (Siklus {month_names[cycle_m - 1]} {cycle_y})\n"
+        f"Aset / Wilayah: *{aset}* / *{wilayah}*\n"
+        f"Vendor: *{canonical_vendor}*\n"
+        f"Lokasi: {lokasi}\n"
+        f"Item:\n{item_summary}\n"
+        f"_Salah input? Ketik `/undo {opname_id}`_"
+    )
+    send_whatsapp_message(reply_chat_id, msg, session)
 
 def handle_whatsapp_command(reply_chat_id, command, session):
     try:
@@ -639,10 +1052,11 @@ def process_message(message: dict):
     is_group = "@g.us" in sender_chat_id
     body = message.get("body", "")
     if is_group:
-        # Only process group messages that have media with a valid SLA code, or /rekap commands
-        is_rekap = isinstance(body, str) and body.strip().lower().startswith("/rekap")
+        body_clean = body.strip().lower() if isinstance(body, str) else ""
+        is_cmd = body_clean.startswith(("/rekap", "/format", "/undo"))
         has_sla_code = message.get("hasMedia") and extract_kode_from_text(body)
-        if not is_rekap and not has_sla_code:
+        has_opname_trig = bool(extract_opname_trigger(body))
+        if not is_cmd and not has_sla_code and not has_opname_trig:
             return  # Silently drop irrelevant group messages
     
     print(f"\n--- New WAHA Message Received ---")
@@ -658,6 +1072,21 @@ def process_message(message: dict):
     # Intercept WhatsApp Commands
     if body and isinstance(body, str):
         text_lower = body.strip().lower()
+        if text_lower.startswith("/format"):
+            if not mark_processed(processing_key):
+                return
+            handle_format_command(reply_chat_id, body, session)
+            return
+        if text_lower.startswith("/undo"):
+            if not mark_processed(processing_key):
+                return
+            handle_undo_command(reply_chat_id, body, session)
+            return
+        if text_lower.startswith("/rekap opname"):
+            if not mark_processed(processing_key):
+                return
+            handle_rekap_opname_command(reply_chat_id, text_lower, session)
+            return
         # FIX #4: Use startswith so custom ranges like "/rekap 6 juli" are also captured
         if text_lower.startswith("/rekap"):
             if not mark_processed(processing_key):
@@ -669,6 +1098,20 @@ def process_message(message: dict):
     # If it's already there (rowcount == 0), another thread/webhook is already processing it!
     if not mark_processed(processing_key):
         print(f"Skipping duplicate message {processing_key}...")
+        return
+
+    # Route Opname messages before SLA flow (supports both photo and missing-photo rejection)
+    opname_trigger = extract_opname_trigger(body)
+    if opname_trigger:
+        process_opname_message(
+            message,
+            reply_chat_id,
+            sender_label,
+            body if isinstance(body, str) else "",
+            opname_trigger,
+            processing_key,
+            session,
+        )
         return
         
     if message.get("hasMedia"):
@@ -699,20 +1142,7 @@ def process_message(message: dict):
         print("Step 1: Downloading photo via WAHA...")
         
         try:
-            # ANTI-BUG: WPP engine often crashes when downloading media and hides the message ID, 
-            # BUT it usually embeds the raw base64 image data directly in the `_data.body` field!
-            raw_data_body = message.get("_data", {}).get("body", "")
-            
-            if raw_data_body and isinstance(raw_data_body, str) and (raw_data_body.startswith("/9j/") or raw_data_body.startswith("iVBORw0K")):
-                print("Step 1: Found Base64 media data directly in webhook payload! Bypassing download API...")
-                import base64
-                img_bytes = base64.b64decode(raw_data_body)
-            else:
-                internal_media_url = resolve_media_download_url(message, settings.WAHA_URL)
-                if not internal_media_url:
-                    raise Exception("WAHA webhook did not provide a usable media URL or message ID, so the photo cannot be downloaded. Please resend the photo.")
-
-                img_bytes = download_whatsapp_media(internal_media_url)
+            img_bytes = _extract_image_bytes_from_message(message)
             
             # 2. Process with AI Vision FIRST so we get the date/sheet name
             print("Step 2: Extracting AI data...")
@@ -1050,6 +1480,15 @@ def read_root(request: Request):
                         <p class="card-desc">Buka dokumen Excel pusat yang sinkron dengan bot ini untuk melihat data progress SLA secara real-time.</p>
                     </div>
                     <a href="{settings.EXCEL_SHARE_LINK}" target="_blank" class="btn excel-btn">Buka Excel Online</a>
+                </div>
+
+                <!-- Card 3b: MS Excel Opname Link -->
+                <div class="card">
+                    <div>
+                        <div class="card-title">Excel Opname (Volume)</div>
+                        <p class="card-desc">Buka database volume opname bulanan (siklus 26-25) yang terhubung ke tabel log &amp; matriks W1/W2.</p>
+                    </div>
+                    <a href="{settings.OPNAME_EXCEL_SHARE_LINK or '#'}" target="_blank" class="btn excel-btn">Buka Excel Opname</a>
                 </div>
 
                 <!-- Card 4: FAQ & Docs -->
