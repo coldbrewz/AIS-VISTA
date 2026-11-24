@@ -3,8 +3,9 @@ import unittest
 from services.opname_catalog import (
     ASSET_TO_TABLE,
     IC_AKSES_WILAYAH,
+    OFFICIAL_VENDOR_ROSTER,
     VALID_OPNAME_ASSETS,
-    format_wa_template,
+    check_roster_pairing,
     get_boq_menu_for_asset,
     normalize_asset_code,
     normalize_vendor,
@@ -142,12 +143,19 @@ class OpnameCatalogTests(unittest.TestCase):
         self.assertEqual(rm_ic_err, "")
         self.assertEqual(rm_ic.item_key, "RM.IC.SERBAR")
 
-    def test_format_wa_template(self):
-        txt = format_wa_template("PV")
-        self.assertIn("Opname:", txt)
-        self.assertIn("Permanen", txt)
-        self.assertIn("Hotmix", txt)
-        self.assertIn("Vendor:", format_wa_template(None))
+    def test_official_roster_and_new_vendor_aliases(self):
+        self.assertEqual(len(OFFICIAL_VENDOR_ROSTER), 21)
+        self.assertEqual(normalize_vendor("PT DM", "PV"), (True, "DANU", ""))
+        self.assertEqual(normalize_vendor("PT WILFANISTA", "PV"), (True, "WILFA", ""))
+        self.assertEqual(normalize_vendor("PT CAKRA", "WR"), (True, "CSP", ""))
+
+        ok_match, msg_ok = check_roster_pairing("PV", "MIJ", "W1")
+        self.assertTrue(ok_match)
+        self.assertEqual(msg_ok, "")
+
+        ok_mismatch, msg_bad = check_roster_pairing("PV", "MIJ", "W2")
+        self.assertFalse(ok_mismatch)
+        self.assertIn("W1", msg_bad)
 
 
 if __name__ == "__main__":

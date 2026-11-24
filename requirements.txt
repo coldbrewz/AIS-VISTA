@@ -5,3 +5,5 @@ pydantic-settings
 requests
 msal
 pillow
+openpyxl
+pypdfium2

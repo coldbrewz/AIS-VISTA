@@ -9,14 +9,7 @@ KODE_PATTERN = re.compile(
     rf"Kode\s*:\s*(\d{{6}}(?:{'|'.join(VALID_SHEET_CODES)})\d{{3,6}})",
     re.IGNORECASE,
 )
-OPNAME_KODE_PATTERN = re.compile(
-    rf"Opname\s*:\s*(\d{{6}}({'|'.join(VALID_SHEET_CODES)})\d{{3,6}})\b",
-    re.IGNORECASE,
-)
-OPNAME_ASSET_PATTERN = re.compile(
-    r"Opname\s*:\s*([A-Za-z][A-Za-z ]{1,15})\b",
-    re.IGNORECASE,
-)
+SCAN_OPNAME_PATTERN = re.compile(r"\b(?:scan\s+opname|opname\s+scan)\b", re.IGNORECASE)
 
 
 def _clean_string(value) -> str | None:
@@ -179,39 +172,55 @@ def reconcile_date_with_message_time(
     return parsed_dt, changed
 
 
-def extract_opname_trigger(text: str) -> dict | None:
+def extract_media_metadata(message: dict) -> tuple[str, str]:
+    """Extract (filename, mimetype) from a WAHA message webhook payload cleanly."""
+    if not isinstance(message, dict):
+        return "", ""
+    media = message.get("media") if isinstance(message.get("media"), dict) else {}
+    raw_data = message.get("_data") if isinstance(message.get("_data"), dict) else {}
+    msg_obj = raw_data.get("Message") if isinstance(raw_data.get("Message"), dict) else {}
+    doc_msg = msg_obj.get("documentMessage") if isinstance(msg_obj.get("documentMessage"), dict) else {}
+
+    filename = (
+        _clean_string(media.get("filename"))
+        or _clean_string(message.get("filename"))
+        or _clean_string(raw_data.get("filename"))
+        or _clean_string(doc_msg.get("fileName"))
+        or _clean_string(doc_msg.get("title"))
+        or ""
+    )
+    mimetype = (
+        _clean_string(media.get("mimetype"))
+        or _clean_string(message.get("mimetype"))
+        or _clean_string(raw_data.get("mimetype"))
+        or _clean_string(doc_msg.get("mimetype"))
+        or ""
+    )
+    return filename, mimetype.lower()
+
+
+def extract_scan_opname_hint(text: str) -> dict | None:
     """
-    Detect `Opname: <KODE_TEMUAN>` or `Opname: <KODE_ASET>` trigger in caption/text.
-    Returns dict with keys: `aset`, `kode_temuan` ("" if routine), or None if not opname.
+    Detect `Scan Opname` / `Opname Scan` trigger and extract optional asset, wilayah, vendor, and minggu hints.
     """
-    if not isinstance(text, str) or not text.strip():
+    if not isinstance(text, str) or not SCAN_OPNAME_PATTERN.search(text):
         return None
-
-    m_kode = OPNAME_KODE_PATTERN.search(text)
-    if m_kode:
-        kode = m_kode.group(1).upper()
-        aset = normalize_asset_code(m_kode.group(2))
-        if aset:
-            return {"aset": aset, "kode_temuan": kode}
-
-    m_aset = OPNAME_ASSET_PATTERN.search(text)
-    if m_aset:
-        raw_token = m_aset.group(1).strip().splitlines()[0].strip()
-        aset = normalize_asset_code(raw_token)
-        if aset:
-            return {"aset": aset, "kode_temuan": ""}
-
-    return None
-
-
-def _to_float(raw: str) -> float | None:
-    if not raw:
-        return None
-    cleaned = raw.strip().replace(",", ".")
-    try:
-        return float(cleaned)
-    except ValueError:
-        return None
+    up = text.upper()
+    aset = ""
+    for tok in re.findall(r"\b([A-Z]{2,10})\b", up):
+        if tok in ("SCAN", "OPNAME", "W1", "W2", "WIL", "PT", "CV"):
+            continue
+        norm = normalize_asset_code(tok)
+        if norm:
+            aset = norm
+            break
+    m_wil = re.search(r"\b(W[12])\b", up)
+    m_wk = re.search(r"\b(M[1-5])\b", up)
+    return {
+        "aset": aset,
+        "wilayah": m_wil.group(1) if m_wil else "",
+        "minggu": m_wk.group(1) if m_wk else "",
+    }
 
 
 def parse_opname_date_str(raw: str) -> str | None:
@@ -250,207 +259,3 @@ def resolve_billing_cycle(dt: date | datetime) -> tuple[int, int]:
             return 1, d.year + 1
         return d.month + 1, d.year
     return d.month, d.year
-
-
-def _extract_jalur_lajur_from_lokasi(lokasi: str) -> str:
-    if not lokasi:
-        return ""
-    tokens: list[str] = []
-    m_ab = re.search(r"\b(A|B)\b(?=\s|$|\s+L\d)", lokasi, re.IGNORECASE)
-    if m_ab:
-        tokens.append(m_ab.group(1).upper())
-    m_l = re.search(r"\b(L\d|BAHU(?:\s+LUAR|\s+DALAM)?|MEDIAN|ROW|RAMP\s+(?:ON|OFF))\b", lokasi, re.IGNORECASE)
-    if m_l:
-        tokens.append(m_l.group(1).upper())
-    return " ".join(tokens).strip()
-
-
-def _parse_qty_expression(expr: str) -> dict:
-    """
-    Parse qty/dimensions, optional unit, and optional `| Baru/Eksisting` from RHS of an item line.
-    Examples:
-      `4.5 x 1.2 x 0.05 m3` -> p=4.5, l=1.2, t=0.05, volume=0.27, satuan="m3"
-      `25 x 1 x 0.45 m3 | Baru` -> p=25, l=1, t=0.45, volume=11.25, satuan="m3", material_status="Baru"
-      `0.62 ton` -> volume=0.62, satuan="ton"
-      `2 hok` -> volume=2.0, satuan="hok"
-    """
-    status = ""
-    main_part = expr.strip()
-    if "|" in main_part:
-        main_part, status_raw = main_part.split("|", 1)
-        status_clean = status_raw.strip().lower()
-        if "baru" in status_clean:
-            status = "Baru"
-        elif "eks" in status_clean or "bekas" in status_clean:
-            status = "Eksisting"
-        else:
-            status = status_raw.strip()
-        main_part = main_part.strip()
-
-    dim_re = re.match(
-        r"^(\d+(?:[.,]\d+)?)\s*[xX*]\s*(\d+(?:[.,]\d+)?)"
-        r"(?:\s*[xX*]\s*(\d+(?:[.,]\d+)?))?"
-        r"(?:\s*[xX*]\s*(\d+(?:[.,]\d+)?))?"
-        r"(?:\s+(.*))?$",
-        main_part,
-    )
-    if dim_re:
-        p = _to_float(dim_re.group(1))
-        l_val = _to_float(dim_re.group(2))
-        t = _to_float(dim_re.group(3)) if dim_re.group(3) else None
-        jml = _to_float(dim_re.group(4)) if dim_re.group(4) else None
-        satuan = (dim_re.group(5) or "").strip()
-        vol = 1.0
-        for v in (p, l_val, t, jml):
-            if v is not None:
-                vol *= v
-        return {
-            "p": p,
-            "l": l_val,
-            "t": t,
-            "jumlah": jml,
-            "volume": round(vol, 4),
-            "satuan": satuan,
-            "material_status": status,
-        }
-
-    scalar_re = re.match(r"^(\d+(?:[.,]\d+)?)\s*(.*)$", main_part)
-    if scalar_re:
-        val = _to_float(scalar_re.group(1))
-        satuan = (scalar_re.group(2) or "").strip()
-        return {
-            "p": None,
-            "l": None,
-            "t": None,
-            "jumlah": None,
-            "volume": val,
-            "satuan": satuan,
-            "material_status": status,
-        }
-
-    return {
-        "p": None,
-        "l": None,
-        "t": None,
-        "jumlah": None,
-        "volume": None,
-        "satuan": "",
-        "material_status": status,
-    }
-
-
-_UNITS_PATTERN = (
-    r"m3|m2|m1|m'|m|meter|mtr|ton|zak|bh|buah|unit|btg|batang|tiang|hok|jam|"
-    r"ls|ltr|liter|lbr|lembar|set|span(?:\s+beam)?|titik|pohon|kg|roll|rit|hr|hari"
-)
-
-
-def _split_item_line(content: str) -> tuple[str, str] | None:
-    """
-    Split an item line into (raw_item, rhs_qty) supporting:
-      - Colon mode:      `Permanen: 4.5 x 1.2 x 0.05 m3` or `II.1: 0.27 m3`
-      - Equals mode:     `Permanen = 4.5 x 1.2 x 0.05 m3`
-      - Colonless mode:  `Permanen 4.5 x 1.2 x 0.05 m3` or `Pasang Tiang 2400 3 tiang`
-    """
-    if ":" in content:
-        lhs, rhs = content.split(":", 1)
-        return lhs.strip(), rhs.strip()
-    if "=" in content:
-        lhs, rhs = content.split("=", 1)
-        return lhs.strip(), rhs.strip()
-
-    # Colonless dimensions: `<item> <P x L [x T [x Jml]]> [unit] [| Baru/Eksisting]`
-    m_dim = re.match(
-        r"^(.+?)\s+(\d+(?:[.,]\d+)?\s*[xX*]\s*\d+(?:[.,]\d+)?.*)$",
-        content,
-    )
-    if m_dim:
-        return m_dim.group(1).strip(), m_dim.group(2).strip()
-
-    # Colonless scalar with explicit unit or terminal number: `<item> <qty> [<unit>] [| Status]`
-    m_unit = re.match(
-        rf"^(.+?)\s+(\d+(?:[.,]\d+)?\s*(?:{_UNITS_PATTERN})(?:\s*\|.*)?)$",
-        content,
-        re.IGNORECASE,
-    )
-    if m_unit:
-        return m_unit.group(1).strip(), m_unit.group(2).strip()
-
-    m_num = re.match(r"^(.+?)\s+(\d+(?:[.,]\d+)?(?:\s*\|.*)?)$", content)
-    if m_num:
-        return m_num.group(1).strip(), m_num.group(2).strip()
-
-    return None
-
-
-def parse_structured_opname_caption(text: str) -> dict:
-    """
-    Deterministically parse structured WhatsApp Opname caption fields:
-      Lokasi:, Vendor:, Tanggal:, Jalur:, Keterangan:, and item lines (with or without `:`).
-    """
-    result = {
-        "lokasi": "",
-        "vendor": "",
-        "tanggal": "",
-        "jalur_lajur": "",
-        "keterangan": "",
-        "items": [],  # list of dicts: raw_item, p, l, t, jumlah, volume, satuan, material_status, error
-        "unparsed_item_lines": [],
-    }
-    if not isinstance(text, str) or not text.strip():
-        return result
-
-    in_item_block = False
-    for raw_line in text.splitlines():
-        line = raw_line.strip()
-        if not line:
-            continue
-
-        # Bulleted or starred item line (allowed inside or outside `Item:` section)
-        if re.match(r"^[-*•]\s+", line):
-            content = re.sub(r"^[-*•]\s+", "", line).strip()
-            split_res = _split_item_line(content)
-            if not split_res:
-                result["unparsed_item_lines"].append(line)
-                continue
-            raw_item, rhs = split_res
-            parsed_qty = _parse_qty_expression(rhs)
-            result["items"].append({"raw_item": raw_item, **parsed_qty})
-            continue
-
-        m_hdr = re.match(r"^(Opname|Lokasi|Vendor|Tanggal|Tgl|Jalur|Lajur|Item|Ket|Keterangan)\s*:\s*(.*)$", line, re.IGNORECASE)
-        if m_hdr:
-            key = m_hdr.group(1).lower()
-            val = m_hdr.group(2).strip()
-            in_item_block = key == "item"
-            if key == "lokasi":
-                result["lokasi"] = val
-            elif key == "vendor":
-                result["vendor"] = val
-            elif key in {"tanggal", "tgl"}:
-                result["tanggal"] = parse_opname_date_str(val) or ""
-            elif key in {"jalur", "lajur"}:
-                result["jalur_lajur"] = val
-            elif key in {"ket", "keterangan"}:
-                result["keterangan"] = val
-            elif key == "item" and val:
-                split_res = _split_item_line(val)
-                if split_res:
-                    raw_item, rhs = split_res
-                    result["items"].append({"raw_item": raw_item, **_parse_qty_expression(rhs)})
-                else:
-                    result["unparsed_item_lines"].append(val)
-            continue
-
-        if in_item_block:
-            split_res = _split_item_line(line)
-            if split_res:
-                raw_item, rhs = split_res
-                result["items"].append({"raw_item": raw_item, **_parse_qty_expression(rhs)})
-            else:
-                result["unparsed_item_lines"].append(line)
-
-    if not result["jalur_lajur"] and result["lokasi"]:
-        result["jalur_lajur"] = _extract_jalur_lajur_from_lokasi(result["lokasi"])
-
-    return result

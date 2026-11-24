@@ -1,3 +1,4 @@
+import base64
 import time
 import random
 import requests
@@ -70,6 +71,47 @@ def send_whatsapp_message(to_phone: str, message: str, session: str = "default")
             return None
             
         print(f"Error sending WAHA message: {e}")
+        if getattr(e, "response", None) is not None:
+            print(f"Response: {e.response.text}")
+        return None
+
+
+def send_whatsapp_document(
+    to_phone: str,
+    file_bytes: bytes,
+    filename: str,
+    caption: str = "",
+    mimetype: str = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    session: str = "default",
+):
+    """Send a binary file (.xlsx / .pdf / .jpg) to WhatsApp via WAHA `/api/sendFile`."""
+    chat_id = normalize_chat_id(to_phone)
+    if not chat_id:
+        print("Warning: Refusing to send WAHA document because chat ID is empty.")
+        return None
+
+    headers = {
+        "Accept": "application/json",
+        "Content-Type": "application/json",
+        "X-Api-Key": settings.WAHA_API_KEY,
+    }
+    url = f"{settings.WAHA_URL}/api/sendFile"
+    payload = {
+        "chatId": chat_id,
+        "file": {
+            "mimetype": mimetype,
+            "filename": filename,
+            "data": base64.b64encode(file_bytes).decode("ascii"),
+        },
+        "caption": caption,
+        "session": session,
+    }
+    try:
+        response = req_session.post(url, json=payload, headers=headers, timeout=45)
+        response.raise_for_status()
+        return response.json()
+    except requests.exceptions.RequestException as e:
+        print(f"Error sending WAHA document: {e}")
         if getattr(e, "response", None) is not None:
             print(f"Response: {e.response.text}")
         return None

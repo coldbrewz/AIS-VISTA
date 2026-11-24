@@ -5,12 +5,14 @@ class Settings(BaseSettings):
     VIKEY_API_KEY: Optional[str] = None
     VIKEY_BASE_URL: str = "https://api.vikey.ai/v1/chat/completions"
     VIKEY_MODEL: str = "deepseek/deepseek-v4.1-flash"
+    VIKEY_OCR_MODEL: str = ""
     
     WAHA_API_KEY: str = ""
     WAHA_URL: str = "http://localhost:3000"
     
     ADMIN_PHONE: str = ""
     DB_URL: str = "processed_messages.db"
+    OPNAME_ARCHIVE_DIR: str = "opname_archive"
     
     ALERT_EMAIL: str = "aistamer@outlook.com"
     SMTP_SERVER: str = "smtp.gmail.com"

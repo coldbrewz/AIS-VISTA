@@ -210,78 +210,63 @@ return exactly:
         return None, f"LLM Error: {str(e)}"
 
 
-def extract_opname_watermark_and_items(
-    image_bytes: bytes,
+def extract_opname_form_ocr(
+    page_images: list[bytes],
+    aset_hint: str,
     caption: str,
-    fallback_date: str,
-    aset: str,
     boq_menu_text: str,
-    need_date: bool = True,
-    need_items: bool = False,
 ) -> tuple[dict, str]:
     """
-    Lightweight LLM helper for Opname:
-      - Skips network LLM call completely (0 tokens) when both `Tanggal` and structured BOQ codes are already present.
-      - Otherwise extracts camera watermark date (YYYY-MM-DD) and/or maps ambiguous item lines strictly to `boq_menu_text`.
-    Returns: ({"tanggal": "YYYY-MM-DD", "items": [{"item_key": ..., "volume": ...}]}, error_str)
+    High-resolution Vision OCR for standardized A4 opname forms (photo or PDF pages).
+    Prioritizes handwritten edits in `Vol. Opname` over printed `Vol. Vendor`, grounded strictly on `boq_menu_text`.
+    Returns: ({"aset": ..., "vendor": ..., "wilayah": ..., "minggu": ..., "rows": [...]}, error_str)
     """
-    if not need_date and not need_items:
-        return {"tanggal": fallback_date, "items": []}, ""
-
+    if not page_images:
+        return {}, "Tidak ada halaman gambar opname untuk dibaca."
     if not settings.VIKEY_API_KEY:
-        if not need_items:
-            return {"tanggal": fallback_date, "items": []}, ""
         return {}, "LLM client not configured. Please set VIKEY_API_KEY in .env."
 
-    task_parts = []
-    if need_date:
-        task_parts.append(
-            f"- tanggal: read date from photo camera watermark (e.g. Marki / GPS Map Camera) in YYYY-MM-DD format. "
-            f"If unreadable or absent, use {fallback_date}."
-        )
-    if need_items:
-        task_parts.append(
-            f"- items: map the caption's uncoded work item descriptions to exact `item_key` from the official {aset} BOQ menu below ONLY if explicitly stated in the caption. NEVER invent items not mentioned in the caption.\n"
-            f"BOQ MENU ({aset}):\n{boq_menu_text}"
-        )
-
+    model_name = (settings.VIKEY_OCR_MODEL or settings.VIKEY_MODEL).strip() or settings.VIKEY_MODEL
     prompt = (
-        f"You are assisting toll road opname data entry for asset {aset}.\n"
-        f"Rules:\n" + "\n".join(task_parts) + "\n"
-        f"Return valid JSON only (no markdown, no explanation):\n"
-        f'{{"tanggal": "YYYY-MM-DD", "items": [{{"item_key": "...", "volume": 0.0, "satuan": ""}}]}}\n\n'
-        f"Caption:\n{caption}"
+        f"You are an expert civil engineering opname OCR reader for Indonesian toll road forms.\n"
+        f"Context hint from user: Aset='{aset_hint or 'auto'}', Caption='{caption or '-'}'.\n\n"
+        f"Instructions:\n"
+        f"1. Read header fields if visible: aset (PV/GR/SG/WR/RM/LC/CA/DR/FE), vendor, wilayah (W1/W2), minggu (M1/M2/M3/M4).\n"
+        f"2. Read every non-empty row from the opname table. IGNORE completely empty blank rows.\n"
+        f"3. CRITICAL: If a number in `Vol. Vendor` is crossed out and replaced by a handwritten number in `Vol. Opname` (or margin note), extract BOTH `vol_vendor` and the handwritten `vol_opname`, and set `handwritten_edited: true`.\n"
+        f"4. Map `raw_item` strictly using the closest exact keyword or item_key from the BOQ menu below when available.\n"
+        f"5. Return valid JSON ONLY (no markdown fences, no commentary):\n"
+        f'{{"aset": "", "vendor": "", "wilayah": "", "minggu": "", "rows": ['
+        f'{{"tanggal": "YYYY-MM-DD", "kode_temuan": "", "wilayah": "", "vendor": "", "lokasi": "", "jalur": "", "lajur": "", "raw_item": "", "p": null, "l": null, "t": null, "jml": null, "vol_vendor": null, "vol_opname": null, "keterangan": "", "handwritten_edited": false}}'
+        f"]}}\n\n"
+        f"OFFICIAL BOQ MENU:\n{boq_menu_text}"
     )
 
-    b64_image = prepare_image_for_llm(image_bytes)
+    content_parts: list[dict] = [{"type": "text", "text": prompt}]
+    for img_bytes in page_images[:5]:
+        b64_page = prepare_image_for_llm(img_bytes, max_size=2048, quality=88)
+        content_parts.append(
+            {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{b64_page}"}}
+        )
+
     headers = {
         "Content-Type": "application/json",
         "Authorization": f"Bearer {settings.VIKEY_API_KEY}",
     }
     body = {
-        "model": settings.VIKEY_MODEL,
-        "messages": [
-            {
-                "role": "user",
-                "content": [
-                    {"type": "text", "text": prompt},
-                    {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{b64_image}"}},
-                ],
-            }
-        ],
+        "model": model_name,
+        "messages": [{"role": "user", "content": content_parts}],
         "temperature": 0.0,
     }
 
     for attempt in range(3):
         try:
-            resp = requests.post(settings.VIKEY_BASE_URL, headers=headers, json=body, timeout=45)
+            resp = requests.post(settings.VIKEY_BASE_URL, headers=headers, json=body, timeout=90)
             if resp.status_code in [429, 500, 502, 503, 504] and attempt < 2:
-                time.sleep(2)
+                time.sleep(3)
                 continue
             if resp.status_code != 200:
-                if not need_items:
-                    return {"tanggal": fallback_date, "items": []}, ""
-                return {}, f"LLM API Error ({resp.status_code}): {resp.text}"
+                return {}, f"OCR LLM API Error ({resp.status_code}): {resp.text}"
             data_json = resp.json()
             raw_content = data_json.get("choices", [{}])[0].get("message", {}).get("content", "")
             if not raw_content:
@@ -290,11 +275,7 @@ def extract_opname_watermark_and_items(
             return parsed if isinstance(parsed, dict) else {}, ""
         except Exception as e:
             if attempt == 2:
-                if not need_items:
-                    return {"tanggal": fallback_date, "items": []}, ""
-                return {}, f"LLM Error: {e}"
+                return {}, f"OCR LLM Error: {e}"
             time.sleep(2)
 
-    if not need_items:
-        return {"tanggal": fallback_date, "items": []}, ""
-    return {}, "Failed to extract opname fields from LLM."
+    return {}, "Failed to extract table rows from opname scan."

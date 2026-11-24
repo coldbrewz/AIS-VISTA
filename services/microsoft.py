@@ -579,6 +579,81 @@ def delete_opname_rows_by_id(
     return deleted
 
 
+def replace_opname_slot_rows(
+    share_url: str,
+    table_name: str,
+    slot_id: str,
+    new_rows: list[list],
+    target_drive_item: tuple[str, str] | None = None,
+) -> tuple[int, int]:
+    """
+    Atomically delete any existing rows in `table_name` whose col 0 (`Opname_ID`) == `slot_id`
+    and append `new_rows` inside a single Excel session lock.
+    Returns `(deleted_count, appended_count)`.
+    """
+    if not share_url and not target_drive_item:
+        raise Exception("OPNAME_EXCEL_SHARE_LINK belum dikonfigurasi.")
+    if not slot_id:
+        return 0, 0
+
+    lock_key = f"{target_drive_item[0]}:{target_drive_item[1]}" if target_drive_item else share_url
+    lock = _get_workbook_lock(lock_key)
+    deleted = 0
+    with lock:
+        token = get_ms_token()
+        session = get_retry_session()
+        headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
+        if target_drive_item:
+            drive_id, item_id = target_drive_item
+        else:
+            drive_id, item_id = _resolve_share_drive_item(session, headers, share_url)
+
+        session_url = f"https://graph.microsoft.com/v1.0/drives/{drive_id}/items/{item_id}/workbook/createSession"
+        session_resp = session.post(session_url, headers=headers, json={"persistChanges": True}, timeout=60)
+        session_resp.raise_for_status()
+        headers["workbook-session-id"] = session_resp.json().get("id")
+
+        try:
+            rows_url = (
+                f"https://graph.microsoft.com/v1.0/drives/{drive_id}/items/{item_id}"
+                f"/workbook/tables/{table_name}/rows"
+            )
+            list_resp = session.get(rows_url, headers=headers, timeout=30)
+            list_resp.raise_for_status()
+            rows_data = list_resp.json().get("value", [])
+
+            target_upper = slot_id.strip().upper()
+            matching_indices = []
+            for row_obj in rows_data:
+                vals = row_obj.get("values", [[]])
+                if vals and vals[0] and str(vals[0][0]).strip().upper() == target_upper:
+                    matching_indices.append(row_obj["index"])
+
+            for idx in sorted(matching_indices, reverse=True):
+                del_url = f"{rows_url}/itemAt(index={idx})"
+                del_resp = session.delete(del_url, headers=headers, timeout=20)
+                if del_resp.ok:
+                    deleted += 1
+
+            if new_rows:
+                fresh_token = get_ms_token()
+                headers["Authorization"] = f"Bearer {fresh_token}"
+                add_url = f"{rows_url}/add"
+                add_resp = session.post(add_url, headers=headers, json={"values": new_rows}, timeout=45)
+                if not add_resp.ok:
+                    raise Exception(
+                        f"Gagal menulis slot {slot_id} ke {table_name} ({add_resp.status_code}): {add_resp.text}"
+                    )
+        finally:
+            try:
+                close_url = f"https://graph.microsoft.com/v1.0/drives/{drive_id}/items/{item_id}/workbook/closeSession"
+                session.post(close_url, headers=headers, timeout=10)
+            except Exception as e:
+                print(f"Warning: Failed to close Excel Opname session on slot upsert: {e}")
+
+    return deleted, len(new_rows)
+
+
 def lookup_sla_location(share_url: str, sheet_name: str, kode: str) -> tuple[str, str] | None:
     """
     Optional lookup into SLA workbook when a PIC submits `Opname: <KODE_TEMUAN>` without typing `Lokasi:`.

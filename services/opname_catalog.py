@@ -56,13 +56,17 @@ VENDOR_ALIASES: Dict[str, str] = {
     "MUSTIKA IFRA JAYA": "MIJ",
     "DANU": "DANU",
     "DANUDIAN": "DANU",
+    "DM": "DANU",
     "BIPR": "BIPR",
     "BUMI INDAH": "BIPR",
     "WILFA": "WILFA",
+    "WILFANISTA": "WILFA",
     "PUK": "PUK",
     "ATLA": "ATLA",
     "ATLA JAYA": "ATLA",
     "CSP": "CSP",
+    "CAKRA": "CSP",
+    "CAKRA SARANA": "CSP",
     "CIPTA SARANA": "CSP",
     "KOPKAR": "KOPKAR",
     "KOPERASI": "KOPKAR",
@@ -83,6 +87,52 @@ ALLOWED_VENDORS_BY_ASSET: Dict[str, Tuple[str, ...]] = {
     "DR": ("KOPKAR", "RPG", "BIPR", "MMS"),
     "FE": ("KOPKAR", "ATLA", "RPG", "MMS"),
 }
+
+# Official 21-slot (aset, canonical_vendor, wilayah) roster per site assignment table
+OFFICIAL_VENDOR_ROSTER: Tuple[Tuple[str, str, str], ...] = (
+    ("PV", "MIJ", "W1"),
+    ("PV", "APG", "W1"),
+    ("PV", "DANU", "W1"),
+    ("PV", "BIPR", "W2"),
+    ("PV", "WILFA", "W2"),
+    ("DR", "KOPKAR", "W1"),
+    ("DR", "RPG", "W2"),
+    ("FE", "KOPKAR", "W1"),
+    ("FE", "KOPKAR", "W2"),
+    ("GR", "ATLA", "W1"),
+    ("GR", "ATLA", "W2"),
+    ("SG", "ATLA", "W1"),
+    ("SG", "ATLA", "W2"),
+    ("LC", "KOPKAR", "W1"),
+    ("LC", "BIPR", "W2"),
+    ("RM", "KOPKAR", "W1"),
+    ("RM", "BIPR", "W2"),
+    ("CA", "KOPKAR", "W1"),
+    ("CA", "BIPR", "W2"),
+    ("WR", "CSP", "W1"),
+    ("WR", "CSP", "W2"),
+)
+
+
+def check_roster_pairing(aset: str, canonical_vendor: str, wilayah: str) -> Tuple[bool, str]:
+    """Validate `(aset, vendor, wilayah)` against OFFICIAL_VENDOR_ROSTER without blocking override after confirm."""
+    if not aset or not canonical_vendor or not wilayah:
+        return False, "Aset, vendor, atau wilayah belum lengkap."
+    if (aset, canonical_vendor, wilayah) in OFFICIAL_VENDOR_ROSTER:
+        return True, ""
+    expected_wil = sorted({w for a, v, w in OFFICIAL_VENDOR_ROSTER if a == aset and v == canonical_vendor})
+    if expected_wil:
+        return (
+            False,
+            f"Di roster resmi, vendor *{canonical_vendor}* untuk *{aset}* bertugas di *{'/'.join(expected_wil)}*, bukan *{wilayah}*.",
+        )
+    expected_vends = sorted({v for a, v, w in OFFICIAL_VENDOR_ROSTER if a == aset and w == wilayah})
+    if expected_vends:
+        return (
+            False,
+            f"Vendor *{canonical_vendor}* tidak terdaftar di roster *{aset} {wilayah}* (resmi: {', '.join(expected_vends)}).",
+        )
+    return False, f"Kombinasi *{aset} {wilayah} {canonical_vendor}* tidak ada di roster resmi."
 
 # Official Wilayah boundaries per Service Level Agreement 2026.xlsx Legend sheet
 W1_MIN_METERS = 26035
@@ -985,7 +1035,7 @@ def resolve_boq_item(
     if len(desc_hits) == 1:
         return desc_hits[0], ""
 
-    return None, f"Item '{raw_item}' tidak cocok dengan daftar keyword BOQ {aset}. Cek via '/format {aset}'."
+    return None, f"Item '{raw_item}' tidak cocok dengan daftar keyword BOQ {aset}. Cek sheet DAFTAR_BOQ di template standar."
 
 
 def get_boq_menu_for_asset(aset: str) -> List[BOQItem]:
@@ -1035,51 +1085,3 @@ def format_boq_cheat_sheet(aset: str, max_items: int = 24) -> str:
     if len(items) > max_items:
         lines.append(f"... ({len(items) - max_items} item lainnya lihat form standar / Excel)")
     return "\n".join(lines)
-
-
-def format_wa_template(aset: Optional[str] = None) -> str:
-    if not aset:
-        return (
-            "📋 *PANDUAN CAPTION OPNAME WHATSAPP*\n"
-            "Ketik `/format <ASET>` untuk lihat daftar keyword BOQ.\n"
-            "Contoh: `/format PV`, `/format GR`, `/format WR`, `/format SG`, `/format RM`, `/format LC`, `/format CA`, `/format DR`, `/format FE`\n\n"
-            "*Format Standar (Wajib Lampirkan Foto):*\n"
-            "```text\n"
-            "Opname: <KODE_TEMUAN atau KODE_ASET>\n"
-            "Lokasi: <KM/STA atau IC/Akses> [A/B L1/L2]\n"
-            "Vendor: <NAMA_VENDOR>\n"
-            "Item:\n"
-            "- <KEYWORD_ITEM>: <Qty atau P x L x T> <Satuan>\n"
-            "```"
-        )
-
-    canon = normalize_asset_code(aset)
-    if not canon:
-        return f"❌ Kode aset '{aset}' tidak dikenal. Gunakan: PV, DR, FE, GR, SG, LC, RM, CA, WR."
-
-    examples = {
-        "PV": ("191026PV001", "KM 45+200 A L1", "MIJ", "- Permanen: 4.5 x 1.2 x 0.05 m3\n- Hotmix: 0.62 Ton"),
-        "SG": ("191026SG002", "KM 38+400 A", "ATLA", "- Panel ACP: 0.81 m2\n- Stiker C: 0.81 m2"),
-        "GR": ("191026GR004", "2.6 SERBAR Ramp OFF", "ATLA", "- Bongkar Beam: 2 Btg\n- Pasang Beam: 2 Btg\n- Pengadaan Tiang 2400: 3 Tiang\n- Mur Baut: 24 Buah"),
-        "WR": ("191026WR005", "KM 64+100 Median", "CSP", "- Pengadaan Line Post: 4 Tiang\n- Pasang Line Post 1080: 4 Tiang\n- Tensioning: 200 Meter"),
-        "RM": ("RM", "KM 36+150 s/d KM 38+750 A", "KOPKAR", "- Rumput: 12500 m2"),
-        "LC": ("LC", "KM 74+200 B", "BIPR", "- Pangkas >30cm: 3 Pohon\n- Pangkas Border: 400 m'"),
-        "CA": ("CA", "KM 32+000 s/d KM 40+000 A", "KOPKAR", "- Mandor: 2 Hok\n- Pekerja: 14 Hok"),
-        "DR": ("DR", "KM 61+800 A", "RPG", "- Keruk Saluran Terbuka: 25 x 1 x 0.45 m3"),
-        "FE": ("191026FE003", "KM 75+800 A", "KOPKAR", "- Pengadaan Panel 5cm: 10 Unit | Baru\n- Pasang Panel 5cm: 10 Unit | Baru"),
-    }
-    trig, loc, vend, body = examples[canon]
-    allowed_v = ", ".join(ALLOWED_VENDORS_BY_ASSET[canon])
-    menu_snippet = format_boq_cheat_sheet(canon, max_items=16)
-    return (
-        f"📋 *TEMPLATE OPNAME {canon} ({ASSET_TITLES[canon]})*\n"
-        f"Vendor: {allowed_v}\n\n"
-        "*Copy-Paste Caption (Wajib Dengan Foto):*\n"
-        f"Opname: {trig}\n"
-        f"Lokasi: {loc}\n"
-        f"Vendor: {vend}\n"
-        "Item:\n"
-        f"{body}\n\n"
-        "*Keyword Item Utama:*\n"
-        f"{menu_snippet}"
-    )

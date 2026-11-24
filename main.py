@@ -1,4 +1,8 @@
 import asyncio
+import io
+import json
+import os
+from pathlib import Path
 import subprocess
 import uuid
 from contextlib import asynccontextmanager
@@ -9,12 +13,13 @@ import re
 import time
 import sqlite3
 from config import settings
-from services.llm import extract_opname_watermark_and_items, extract_sla_data
+from services.llm import extract_opname_form_ocr, extract_sla_data
 from services.message_utils import (
     extract_kode_from_text,
+    extract_media_metadata,
     extract_message_id,
-    extract_opname_trigger,
-    parse_structured_opname_caption,
+    extract_scan_opname_hint,
+    parse_opname_date_str,
     reconcile_date_with_message_time,
     resolve_billing_cycle,
     resolve_media_download_url,
@@ -22,19 +27,26 @@ from services.message_utils import (
 )
 from services.opname_catalog import (
     ASSET_TO_TABLE,
+    OFFICIAL_VENDOR_ROSTER,
+    check_roster_pairing,
     format_boq_cheat_sheet,
-    format_wa_template,
     normalize_asset_code,
     normalize_vendor,
     resolve_boq_item,
     resolve_wilayah,
 )
-from services.whatsapp import send_whatsapp_message
+from services.opname_xlsx import (
+    MONTH_INDEX_TO_ABBR,
+    XlsxSlotBatch,
+    build_prefilled_standard_xlsx,
+    parse_standard_opname_xlsx,
+)
+from services.whatsapp import send_whatsapp_document, send_whatsapp_message
 from services.microsoft import (
     append_opname_rows,
     delete_opname_rows_by_id,
     ensure_monthly_opname_workbook,
-    lookup_sla_location,
+    replace_opname_slot_rows,
     update_excel_row,
     upload_photo_to_onedrive,
 )
@@ -520,6 +532,30 @@ def init_db():
                  web_url TEXT,
                  created_at TEXT
                  )''')
+    c.execute('''CREATE TABLE IF NOT EXISTS opname_pending (
+                 pending_id TEXT PRIMARY KEY,
+                 kind TEXT,
+                 aset TEXT,
+                 payload_json TEXT,
+                 xlsx_path TEXT,
+                 source_path TEXT,
+                 warnings_text TEXT,
+                 status TEXT DEFAULT 'PENDING',
+                 created_at TEXT
+                 )''')
+    c.execute('''CREATE TABLE IF NOT EXISTS opname_archives (
+                 archive_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                 slot_id TEXT,
+                 cycle_key TEXT,
+                 aset TEXT,
+                 wilayah TEXT,
+                 vendor TEXT,
+                 minggu TEXT,
+                 source_type TEXT,
+                 file_path TEXT,
+                 row_count INTEGER,
+                 created_at TEXT
+                 )''')
     # Upgrade older opname_entries schema gracefully if columns missing
     existing_cols = {row[1] for row in c.execute("PRAGMA table_info(opname_entries)").fetchall()}
     if "drive_id" not in existing_cols:
@@ -570,10 +606,430 @@ def _extract_image_bytes_from_message(message: dict) -> bytes:
     return download_whatsapp_media(internal_media_url)
 
 
-def handle_format_command(reply_chat_id: str, body_text: str, session: str):
-    parts = body_text.strip().split(None, 1)
-    aset_arg = parts[1].strip() if len(parts) > 1 else None
-    send_whatsapp_message(reply_chat_id, format_wa_template(aset_arg), session)
+def _save_opname_archive_file(cycle_key: str, aset: str, filename: str, data_bytes: bytes) -> str:
+    safe_name = re.sub(r"[^A-Za-z0-9_.\-]+", "_", os.path.basename(filename or "opname.bin"))
+    target_dir = Path(settings.OPNAME_ARCHIVE_DIR) / cycle_key / aset
+    target_dir.mkdir(parents=True, exist_ok=True)
+    target_path = target_dir / safe_name
+    target_path.write_bytes(data_bytes)
+    return str(target_path)
+
+
+def _render_pdf_pages_to_jpeg(pdf_bytes: bytes, max_pages: int = 5) -> list[bytes]:
+    import pypdfium2 as pdfium
+    pages: list[bytes] = []
+    doc = pdfium.PdfDocument(pdf_bytes)
+    try:
+        n_pages = min(len(doc), max_pages)
+        for idx in range(n_pages):
+            page = doc[idx]
+            bitmap = page.render(scale=2.2)
+            pil_img = bitmap.to_pil()
+            if pil_img.mode != "RGB":
+                pil_img = pil_img.convert("RGB")
+            buf = io.BytesIO()
+            pil_img.save(buf, format="JPEG", quality=88)
+            pages.append(buf.getvalue())
+    finally:
+        doc.close()
+    return pages
+
+
+def _serialize_slots(slots: list[XlsxSlotBatch]) -> str:
+    serializable = []
+    for sl in slots:
+        serializable.append(
+            {
+                "slot_id": sl.slot_id,
+                "cycle_key": sl.cycle_key,
+                "cycle_month": sl.cycle_month,
+                "cycle_year": sl.cycle_year,
+                "aset": sl.aset,
+                "wilayah": sl.wilayah,
+                "vendor": sl.vendor,
+                "minggu": sl.minggu,
+                "table_name": sl.table_name,
+                "entries": [
+                    {
+                        "tanggal": e["tanggal"],
+                        "minggu": e.get("minggu", sl.minggu),
+                        "kode_temuan": e.get("kode_temuan", "-"),
+                        "wilayah": e["wilayah"],
+                        "vendor": e["vendor"],
+                        "lokasi": e["lokasi"],
+                        "jalur_lajur": e.get("jalur_lajur", "-"),
+                        "item_key": e["item_key"],
+                        "keyword": e.get("keyword", e["item_key"]),
+                        "uraian": e.get("uraian", ""),
+                        "satuan": e["satuan"],
+                        "p": e.get("p"),
+                        "l": e.get("l"),
+                        "t": e.get("t"),
+                        "jml": e.get("jml"),
+                        "volume": e["volume"],
+                        "material_status": e.get("material_status", ""),
+                        "keterangan": e.get("keterangan", ""),
+                    }
+                    for e in sl.entries
+                ],
+            }
+        )
+    return json.dumps(serializable)
+
+
+def _resolve_cycle_target_di(cycle_m: int, cycle_y: int) -> tuple[tuple[str, str] | None, str, str]:
+    if not settings.OPNAME_AUTO_MONTHLY:
+        return None, "", ""
+    cycle_key = f"{cycle_y:04d}-{cycle_m:02d}"
+    conn_wb = sqlite3.connect(settings.DB_URL)
+    cached = conn_wb.execute(
+        "SELECT drive_id, item_id FROM opname_workbooks WHERE cycle_key = ?",
+        (cycle_key,),
+    ).fetchone()
+    conn_wb.close()
+    if cached and cached[0] and cached[1]:
+        return (cached[0], cached[1]), cached[0], cached[1]
+    target_drive_id, target_item_id, wb_web_url = ensure_monthly_opname_workbook(
+        settings.OPNAME_EXCEL_SHARE_LINK, cycle_m, cycle_y
+    )
+    conn_wb = sqlite3.connect(settings.DB_URL)
+    conn_wb.execute(
+        "INSERT OR REPLACE INTO opname_workbooks (cycle_key, drive_id, item_id, web_url, created_at) VALUES (?, ?, ?, ?, ?)",
+        (cycle_key, target_drive_id, target_item_id, wb_web_url, datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")),
+    )
+    conn_wb.commit()
+    conn_wb.close()
+    return (target_drive_id, target_item_id), target_drive_id, target_item_id
+
+
+def _commit_opname_slots(
+    slots_data: list[dict],
+    sender_label: str,
+    source_type: str,
+    archive_paths: list[tuple[str, str]],
+) -> list[dict]:
+    if not settings.OPNAME_EXCEL_SHARE_LINK:
+        raise Exception("`OPNAME_EXCEL_SHARE_LINK` belum diatur di server bot.")
+
+    results = []
+    created_now = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    for sl in slots_data:
+        slot_id = sl["slot_id"]
+        cycle_key = sl["cycle_key"]
+        cycle_m = int(sl["cycle_month"])
+        cycle_y = int(sl["cycle_year"])
+        aset = sl["aset"]
+        wilayah = sl["wilayah"]
+        vendor = sl["vendor"]
+        minggu = sl["minggu"]
+        table_name = sl["table_name"]
+        entries = sl["entries"]
+
+        target_di, drive_id, item_id = _resolve_cycle_target_di(cycle_m, cycle_y)
+        excel_rows = []
+        archive_ref = archive_paths[0][1] if archive_paths else "-"
+        for ent in entries:
+            has_dims = any(ent.get(k) is not None for k in ("p", "l", "t", "jml"))
+            vol_cell = ent["volume"]
+            if has_dims:
+                p_v, l_v, t_v, j_v = ent.get("p"), ent.get("l"), ent.get("t"), ent.get("jml")
+                calc_prod = 1.0
+                for d_v in (p_v, l_v, t_v, j_v):
+                    if d_v is not None:
+                        calc_prod *= float(d_v)
+                if abs(calc_prod - float(ent["volume"])) < 0.01:
+                    vol_cell = "=[@[Volume_Calc]]"
+            excel_rows.append(
+                [
+                    slot_id,
+                    ent.get("kode_temuan") or "-",
+                    ent["tanggal"],
+                    aset,
+                    wilayah,
+                    ent.get("lokasi") or "-",
+                    ent.get("jalur_lajur") or "-",
+                    vendor,
+                    ent["item_key"],
+                    ent.get("uraian") or "",
+                    ent.get("p"),
+                    ent.get("l"),
+                    ent.get("t"),
+                    ent.get("jml"),
+                    '=IF(COUNT([@P]:[@Jumlah])>0,PRODUCT([@P]:[@Jumlah]),"")',
+                    vol_cell,
+                    ent["satuan"],
+                    ent.get("material_status") or "",
+                    sender_label,
+                    archive_ref,
+                    f"[{minggu}] {ent.get('keterangan') or ''}".strip(),
+                ]
+            )
+
+        try:
+            deleted_cnt, appended_cnt = replace_opname_slot_rows(
+                settings.OPNAME_EXCEL_SHARE_LINK,
+                table_name,
+                slot_id,
+                excel_rows,
+                target_drive_item=target_di,
+            )
+        except Exception:
+            if settings.OPNAME_AUTO_MONTHLY:
+                conn_wb = sqlite3.connect(settings.DB_URL)
+                conn_wb.execute("DELETE FROM opname_workbooks WHERE cycle_key = ?", (cycle_key,))
+                conn_wb.commit()
+                conn_wb.close()
+            raise
+
+        conn = sqlite3.connect(settings.DB_URL)
+        c = conn.cursor()
+        c.execute(
+            "UPDATE opname_entries SET status = 'REPLACED' WHERE UPPER(opname_id) = ? AND status = 'ACTIVE'",
+            (slot_id.upper(),),
+        )
+        for ent in entries:
+            c.execute(
+                """
+                INSERT INTO opname_entries (
+                    opname_id, aset, wilayah, tanggal, lokasi, vendor,
+                    item_key, volume, satuan, table_name, status, created_at, pic, kode_temuan,
+                    drive_id, item_id
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'ACTIVE', ?, ?, ?, ?, ?)
+                """,
+                (
+                    slot_id,
+                    aset,
+                    wilayah,
+                    ent["tanggal"],
+                    ent.get("lokasi") or "-",
+                    vendor,
+                    ent["item_key"],
+                    ent["volume"],
+                    ent["satuan"],
+                    table_name,
+                    created_now,
+                    f"{sender_label} [{minggu}]",
+                    ent.get("kode_temuan") or "-",
+                    drive_id,
+                    item_id,
+                ),
+            )
+        for f_src_type, f_path in archive_paths:
+            if f_path:
+                c.execute(
+                    """
+                    INSERT INTO opname_archives (
+                        slot_id, cycle_key, aset, wilayah, vendor, minggu, source_type, file_path, row_count, created_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (slot_id, cycle_key, aset, wilayah, vendor, minggu, f_src_type, f_path, len(entries), created_now),
+                )
+        conn.commit()
+        conn.close()
+
+        results.append(
+            {
+                "slot_id": slot_id,
+                "cycle_key": cycle_key,
+                "aset": aset,
+                "wilayah": wilayah,
+                "vendor": vendor,
+                "minggu": minggu,
+                "table_name": table_name,
+                "deleted": deleted_cnt,
+                "appended": appended_cnt,
+                "entries": entries,
+            }
+        )
+    return results
+
+
+def _format_commit_reply(results: list[dict], source_label: str) -> str:
+    month_names = [
+        "Januari", "Februari", "Maret", "April", "Mei", "Juni",
+        "Juli", "Agustus", "September", "Oktober", "November", "Desember",
+    ]
+    blocks = [f"✅ *Opname Berhasil Dicatat ({source_label})*"]
+    for res in results:
+        cycle_y, cycle_m = map(int, res["cycle_key"].split("-"))
+        action_note = f"revisi menggantikan {res['deleted']} baris lama" if res["deleted"] else "slot baru"
+        agg: dict[tuple[str, str, str], float] = {}
+        for e in res["entries"]:
+            k = (e.get("keyword") or e["item_key"], e["item_key"], e["satuan"])
+            agg[k] = agg.get(k, 0.0) + float(e["volume"])
+        item_lines = "\n".join(
+            f"  • *{kw}* (`{ik}`): *{vol:g} {sat}*" for (kw, ik, sat), vol in agg.items()
+        )
+        blocks.append(
+            f"\nID: `{res['slot_id']}` ({action_note})\n"
+            f"Siklus: {month_names[cycle_m - 1]} {cycle_y} | Minggu: *{res['minggu']}*\n"
+            f"Aset / Wilayah / Vendor: *{res['aset']}* / *{res['wilayah']}* / *{res['vendor']}*\n"
+            f"Total Baris: {res['appended']}\n"
+            f"{item_lines}\n"
+            f"_Batalkan? Ketik `/undo {res['slot_id']}`_"
+        )
+    return "\n".join(blocks)
+
+
+def _stage_pending_confirmation(
+    pending_id: str,
+    kind: str,
+    aset: str,
+    slots_data: list[dict],
+    xlsx_path: str,
+    source_path: str,
+    warnings: list[str],
+) -> None:
+    conn = sqlite3.connect(settings.DB_URL)
+    conn.execute(
+        """
+        INSERT OR REPLACE INTO opname_pending (
+            pending_id, kind, aset, payload_json, xlsx_path, source_path, warnings_text, status, created_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, 'PENDING', ?)
+        """,
+        (
+            pending_id,
+            kind,
+            aset,
+            json.dumps(slots_data),
+            xlsx_path,
+            source_path,
+            "\n".join(warnings),
+            datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        ),
+    )
+    conn.commit()
+    conn.close()
+
+
+def handle_simpan_command(reply_chat_id: str, sender_label: str, body_text: str, session: str) -> None:
+    parts = body_text.strip().split()
+    if len(parts) < 2:
+        send_whatsapp_message(reply_chat_id, "❌ Format salah. Ketik `/simpan SCAN-...` atau `/simpan CONF-...`.", session)
+        return
+    pending_id = parts[1].strip().upper()
+    conn = sqlite3.connect(settings.DB_URL)
+    row = conn.execute(
+        "SELECT kind, aset, payload_json, xlsx_path, source_path, status FROM opname_pending WHERE UPPER(pending_id) = ?",
+        (pending_id,),
+    ).fetchone()
+    conn.close()
+    if not row:
+        send_whatsapp_message(reply_chat_id, f"⚠️ ID staging `{pending_id}` tidak ditemukan.", session)
+        return
+    kind, _aset, payload_json, xlsx_path, source_path, status = row
+    if status != "PENDING":
+        send_whatsapp_message(reply_chat_id, f"⚠️ Data `{pending_id}` sudah diproses sebelumnya (`{status}`).", session)
+        return
+
+    slots_data = json.loads(payload_json)
+    archive_files = []
+    if source_path:
+        archive_files.append(("SCAN_SRC", source_path))
+    if xlsx_path:
+        archive_files.append(("XLSX", xlsx_path))
+
+    try:
+        results = _commit_opname_slots(slots_data, sender_label, kind, archive_files)
+    except Exception as e:
+        send_whatsapp_message(reply_chat_id, f"❌ Gagal menyimpan `{pending_id}` ke OneDrive: {e}", session)
+        return
+
+    conn = sqlite3.connect(settings.DB_URL)
+    conn.execute("UPDATE opname_pending SET status = 'CONFIRMED' WHERE UPPER(pending_id) = ?", (pending_id,))
+    conn.commit()
+    conn.close()
+    send_whatsapp_message(reply_chat_id, _format_commit_reply(results, f"Konfirmasi {pending_id}"), session)
+
+
+def handle_status_opname_command(reply_chat_id: str, text_lower: str, session: str) -> None:
+    now = datetime.datetime.now()
+    m_cyc = re.search(r"(\d{4})[-/](\d{1,2})", text_lower)
+    if m_cyc:
+        cycle_y, cycle_m = int(m_cyc.group(1)), int(m_cyc.group(2))
+    else:
+        cycle_m, cycle_y = resolve_billing_cycle(now)
+    yy_mm = f"{cycle_y % 100:02d}{cycle_m:02d}"
+
+    conn = sqlite3.connect(settings.DB_URL)
+    rows = conn.execute(
+        """
+        SELECT DISTINCT aset, wilayah, vendor, opname_id
+        FROM opname_entries
+        WHERE status = 'ACTIVE' AND opname_id LIKE ?
+        """,
+        (f"XLS-{yy_mm}-%",),
+    ).fetchall()
+    conn.close()
+
+    by_slot: dict[tuple[str, str, str], set[str]] = {}
+    for aset, wil, vend, op_id in rows:
+        wk = str(op_id).rsplit("-", 1)[-1]
+        by_slot.setdefault((aset, wil, vend), set()).add(wk)
+
+    lines = [f"📋 *STATUS OPNAME ROSTER ({cycle_y:04d}-{cycle_m:02d}, 21 Slot)*\n"]
+    done_cnt = 0
+    for aset, vend, wil in OFFICIAL_VENDOR_ROSTER:
+        wks = sorted(by_slot.get((aset, wil, vend), set()))
+        if wks:
+            done_cnt += 1
+            lines.append(f"✅ {aset} | {wil} | {vend} : {', '.join(wks)}")
+        else:
+            lines.append(f"⏳ {aset} | {wil} | {vend} : belum ada")
+    lines.append(f"\nTerisi: *{done_cnt}/{len(OFFICIAL_VENDOR_ROSTER)}* slot.")
+    send_whatsapp_message(reply_chat_id, "\n".join(lines), session)
+
+
+def handle_arsip_command(reply_chat_id: str, body_text: str, session: str) -> None:
+    query = body_text.strip().split(None, 1)
+    if len(query) < 2:
+        send_whatsapp_message(reply_chat_id, "❌ Format: `/arsip <SLOT_ID>` atau `/arsip <ASET> [YYYY-MM]`.", session)
+        return
+    arg = query[1].strip().upper()
+    conn = sqlite3.connect(settings.DB_URL)
+    if arg.startswith("XLS-"):
+        rows = conn.execute(
+            "SELECT DISTINCT file_path, source_type, slot_id FROM opname_archives WHERE UPPER(slot_id) = ? ORDER BY archive_id DESC LIMIT 3",
+            (arg,),
+        ).fetchall()
+    else:
+        toks = arg.split()
+        aset_tok = normalize_asset_code(toks[0]) or toks[0]
+        cyc_tok = toks[1] if len(toks) > 1 else ""
+        if cyc_tok:
+            rows = conn.execute(
+                "SELECT DISTINCT file_path, source_type, slot_id FROM opname_archives WHERE aset = ? AND cycle_key = ? ORDER BY archive_id DESC LIMIT 3",
+                (aset_tok, cyc_tok),
+            ).fetchall()
+        else:
+            rows = conn.execute(
+                "SELECT DISTINCT file_path, source_type, slot_id FROM opname_archives WHERE aset = ? ORDER BY archive_id DESC LIMIT 3",
+                (aset_tok,),
+            ).fetchall()
+    conn.close()
+
+    sent = 0
+    for f_path, src_type, sl_id in rows:
+        p = Path(f_path)
+        if not p.exists():
+            continue
+        ext = p.suffix.lower()
+        mime = (
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+            if ext == ".xlsx"
+            else ("application/pdf" if ext == ".pdf" else "image/jpeg")
+        )
+        send_whatsapp_document(
+            reply_chat_id,
+            p.read_bytes(),
+            p.name,
+            caption=f"📁 Arsip `{sl_id}` ({src_type})",
+            mimetype=mime,
+            session=session,
+        )
+        sent += 1
+    if sent == 0:
+        send_whatsapp_message(reply_chat_id, f"⚠️ Arsip `{arg}` tidak ditemukan.", session)
 
 
 def handle_undo_command(reply_chat_id: str, body_text: str, session: str):
@@ -670,311 +1126,276 @@ def handle_rekap_opname_command(reply_chat_id: str, text_lower: str, session: st
     send_whatsapp_message(reply_chat_id, "\n".join(lines), session)
 
 
-def process_opname_message(
+def process_opname_xlsx_message(
+    file_bytes: bytes,
+    filename: str,
+    reply_chat_id: str,
+    sender_label: str,
+    caption: str,
+    processing_key: str,
+    session: str,
+) -> bool:
+    if not settings.OPNAME_ENABLED:
+        return False
+
+    res = parse_standard_opname_xlsx(file_bytes, filename=filename, caption=caption)
+    if not res.is_standard_form:
+        return False
+
+    if res.errors:
+        err_txt = "\n".join(f"- {e}" for e in res.errors[:12])
+        send_whatsapp_message(reply_chat_id, f"⚠️ *File Excel Opname Ditolak*\n{err_txt}", session)
+        return True
+
+    first_sl = res.slots[0]
+    arch_name = filename or f"{first_sl.slot_id}.xlsx"
+    xlsx_arch_path = _save_opname_archive_file(first_sl.cycle_key, first_sl.aset, arch_name, file_bytes)
+    slots_data = json.loads(_serialize_slots(res.slots))
+
+    if res.roster_warnings:
+        conf_id = f"CONF-{datetime.datetime.now():%y%m%d}-{uuid.uuid4().hex[:4].upper()}"
+        _stage_pending_confirmation(
+            conf_id,
+            "XLSX_MISMATCH",
+            res.aset or first_sl.aset,
+            slots_data,
+            xlsx_arch_path,
+            "",
+            res.roster_warnings,
+        )
+        warn_txt = "\n".join(f"• {w}" for w in res.roster_warnings)
+        slot_txt = ", ".join(s["slot_id"] for s in slots_data)
+        send_whatsapp_message(
+            reply_chat_id,
+            f"⚠️ *Butuh Konfirmasi Roster ({conf_id})*\n"
+            f"Slot terdeteksi: `{slot_txt}`\n"
+            f"{warn_txt}\n\n"
+            f"Tetap simpan data ini ke DATA UNTUK VOL? Ketik:\n`/simpan {conf_id}`",
+            session,
+        )
+        return True
+
+    try:
+        results = _commit_opname_slots(slots_data, sender_label, "XLSX", [("XLSX", xlsx_arch_path)])
+    except Exception as e:
+        unmark_processed(processing_key)
+        send_whatsapp_message(reply_chat_id, f"❌ Gagal menulis data Excel ke OneDrive: {e}", session)
+        return True
+
+    send_whatsapp_message(reply_chat_id, _format_commit_reply(results, "Excel Form"), session)
+    return True
+
+
+def process_opname_scan_message(
     message: dict,
     reply_chat_id: str,
     sender_label: str,
     caption: str,
-    trigger: dict,
+    scan_hint: dict,
     processing_key: str,
     session: str,
-):
+) -> None:
     if not settings.OPNAME_ENABLED:
         return
 
-    aset = trigger["aset"]
-    kode_temuan = trigger["kode_temuan"]
-
-    # Guardrail 1: Photo is mandatory
     if not message.get("hasMedia"):
         send_whatsapp_message(
             reply_chat_id,
-            f"⚠️ *Opname Ditolak ({aset})*\nFoto lapangan wajib dilampirkan pada pesan opname.\n\n{format_wa_template(aset)}",
+            "⚠️ *Scan Opname Ditolak*\nLampirkan foto atau PDF form opname bersama caption `Scan Opname`.",
             session,
         )
         return
 
-    parsed = parse_structured_opname_caption(caption)
-
-    # Guardrail 2: Vendor is mandatory (no silent default)
-    v_ok, canonical_vendor, v_err = normalize_vendor(parsed["vendor"], aset)
-    if not v_ok or not canonical_vendor:
-        send_whatsapp_message(
-            reply_chat_id,
-            f"⚠️ *Opname Ditolak ({aset})*\n{v_err}\n\nKetik `/format {aset}` untuk lihat contoh.",
-            session,
-        )
-        return
-
-    # Guardrail 3: Lokasi (try SLA lookup if kode_temuan provided without Lokasi) -> Wilayah W1/W2
-    lokasi = parsed["lokasi"]
-    jalur_lajur = parsed["jalur_lajur"]
-    if not lokasi and kode_temuan and settings.EXCEL_SHARE_LINK:
-        sla_loc = lookup_sla_location(settings.EXCEL_SHARE_LINK, aset, kode_temuan)
-        if sla_loc:
-            lokasi, jalur_sla = sla_loc
-            if not jalur_lajur:
-                jalur_lajur = jalur_sla
-
-    w_ok, wilayah, _, w_err = resolve_wilayah(lokasi)
-    if not w_ok or not wilayah:
-        send_whatsapp_message(
-            reply_chat_id,
-            f"⚠️ *Opname Ditolak ({aset})*\n{w_err}\n\nKetik `/format {aset}` untuk lihat contoh.",
-            session,
-        )
-        return
-
-    timestamp_unix = message.get("timestamp", "")
+    filename, mimetype = extract_media_metadata(message)
     try:
-        msg_dt = (
-            datetime.datetime.fromtimestamp(int(timestamp_unix))
-            if timestamp_unix
-            else datetime.datetime.now()
-        )
-    except Exception:
-        msg_dt = datetime.datetime.now()
-    fallback_date = msg_dt.strftime("%Y-%m-%d")
-
-    try:
-        img_bytes = _extract_image_bytes_from_message(message)
+        raw_bytes = _extract_image_bytes_from_message(message)
     except Exception as dl_err:
         unmark_processed(processing_key)
-        send_whatsapp_message(reply_chat_id, f"❌ Gagal mengunduh foto opname: {dl_err}", session)
+        send_whatsapp_message(reply_chat_id, f"❌ Gagal mengunduh lampiran Scan Opname: {dl_err}", session)
         return
 
-    # Guardrail 4: Deterministic BOQ item resolution FIRST; LLM only when date omitted or item phrase needs resolution
-    resolved_items = []
-    item_errors = []
-    for raw_entry in parsed["items"]:
-        boq_item, b_err = resolve_boq_item(aset, raw_entry["raw_item"], lokasi=lokasi, wilayah=wilayah)
+    is_pdf = (
+        mimetype == "application/pdf"
+        or filename.lower().endswith(".pdf")
+        or raw_bytes[:4] == b"%PDF"
+    )
+    if is_pdf:
+        try:
+            page_images = _render_pdf_pages_to_jpeg(raw_bytes)
+        except Exception as pdf_err:
+            unmark_processed(processing_key)
+            send_whatsapp_message(reply_chat_id, f"❌ Gagal membaca PDF Scan Opname: {pdf_err}", session)
+            return
+    else:
+        page_images = [raw_bytes]
+
+    hint_aset = scan_hint.get("aset") or ""
+    boq_menu = format_boq_cheat_sheet(hint_aset, max_items=40) if hint_aset else ""
+    ocr_res, ocr_err = extract_opname_form_ocr(page_images, hint_aset, caption, boq_menu)
+    if ocr_err and not ocr_res.get("rows"):
+        unmark_processed(processing_key)
+        send_whatsapp_message(reply_chat_id, f"❌ OCR Scan Opname gagal: {ocr_err}", session)
+        return
+
+    aset = normalize_asset_code(hint_aset or str(ocr_res.get("aset", "")))
+    if not aset:
+        send_whatsapp_message(
+            reply_chat_id,
+            "⚠️ Jenis pekerjaan tidak terbaca dari scan. Sertakan kode di caption, contoh: `Scan Opname PV`.",
+            session,
+        )
+        return
+
+    raw_rows = ocr_res.get("rows") or []
+    if not raw_rows:
+        send_whatsapp_message(reply_chat_id, "⚠️ Tidak ada baris pekerjaan terbaca pada lampiran scan.", session)
+        return
+
+    fallback_dt = datetime.datetime.now().strftime("%Y-%m-%d")
+    hdr_vend = str(ocr_res.get("vendor") or "").strip()
+    hdr_wil = str(ocr_res.get("wilayah") or scan_hint.get("wilayah") or "").strip().upper()
+    hdr_wk = str(ocr_res.get("minggu") or scan_hint.get("minggu") or "M1").strip().upper()
+    if not re.fullmatch(r"M[1-5]", hdr_wk):
+        hdr_wk = "M1"
+
+    parsed_entries: list[dict] = []
+    warnings: list[str] = []
+    warn_seen: set[str] = set()
+    errors: list[str] = []
+    preview_lines: list[str] = []
+
+    for i_r, r_obj in enumerate(raw_rows, start=1):
+        t_str = parse_opname_date_str(str(r_obj.get("tanggal") or "")) or fallback_dt
+        loc = str(r_obj.get("lokasi") or "").strip()
+        wil = str(r_obj.get("wilayah") or hdr_wil or "").strip().upper()
+        if loc:
+            w_ok, loc_w, _, w_err = resolve_wilayah(f"{loc} {wil}".strip() if wil in ("W1", "W2") else loc)
+            if not w_ok or not loc_w:
+                errors.append(f"Baris {i_r}: {w_err}")
+                continue
+            wil = loc_w
+        if wil not in ("W1", "W2"):
+            errors.append(f"Baris {i_r}: Wilayah W1/W2 tidak terbaca.")
+            continue
+
+        v_ok, canon_v, v_err = normalize_vendor(str(r_obj.get("vendor") or hdr_vend), aset)
+        if not v_ok or not canon_v:
+            errors.append(f"Baris {i_r}: {v_err}")
+            continue
+
+        boq_item, b_err = resolve_boq_item(aset, str(r_obj.get("raw_item") or ""), lokasi=loc, wilayah=wil)
         if not boq_item:
-            item_errors.append(f"- `{raw_entry['raw_item']}`: {b_err}")
+            errors.append(f"Baris {i_r}: {b_err}")
             continue
-        vol = raw_entry.get("volume")
-        if vol is None or vol <= 0:
-            item_errors.append(f"- `{raw_entry['raw_item']}`: volume tidak valid ({raw_entry}).")
+
+        vol_opn = r_obj.get("vol_opname")
+        vol_vnd = r_obj.get("vol_vendor")
+        vol_final = vol_opn if vol_opn is not None else vol_vnd
+        try:
+            vol_num = float(vol_final) if vol_final is not None else 0.0
+        except (TypeError, ValueError):
+            vol_num = 0.0
+        if vol_num <= 0:
+            errors.append(f"Baris {i_r}: Volume '{boq_item.keyword}' tidak terbaca / <= 0.")
             continue
-        resolved_items.append(
+
+        r_ok, r_warn = check_roster_pairing(aset, canon_v, wil)
+        if not r_ok and r_warn not in warn_seen:
+            warn_seen.add(r_warn)
+            warnings.append(r_warn)
+
+        jalur = " ".join(p for p in (str(r_obj.get("jalur") or "").strip(), str(r_obj.get("lajur") or "").strip()) if p) or "-"
+        edited_mark = " ✏️" if r_obj.get("handwritten_edited") else ""
+        preview_lines.append(
+            f"{i_r}. *{boq_item.keyword}* (`{boq_item.item_key}`) | {loc or wil} | *{vol_num:g} {boq_item.satuan}*{edited_mark}"
+        )
+        parsed_entries.append(
             {
+                "tanggal": t_str,
+                "minggu": hdr_wk,
+                "kode_temuan": str(r_obj.get("kode_temuan") or "-").strip() or "-",
+                "wilayah": wil,
+                "vendor": canon_v,
+                "lokasi": loc or "-",
+                "jalur_lajur": jalur,
                 "item": boq_item,
-                "p": raw_entry.get("p"),
-                "l": raw_entry.get("l"),
-                "t": raw_entry.get("t"),
-                "jumlah": raw_entry.get("jumlah"),
-                "volume": float(vol),
-                "satuan": raw_entry.get("satuan") or boq_item.satuan,
-                "material_status": raw_entry.get("material_status") or "",
+                "item_key": boq_item.item_key,
+                "keyword": boq_item.keyword,
+                "uraian": boq_item.uraian,
+                "satuan": boq_item.satuan,
+                "p": r_obj.get("p"),
+                "l": r_obj.get("l"),
+                "t": r_obj.get("t"),
+                "jml": r_obj.get("jml"),
+                "vol_vendor": vol_vnd,
+                "volume": round(vol_num, 4),
+                "material_status": "",
+                "keterangan": str(r_obj.get("keterangan") or "").strip(),
             }
         )
 
-    need_date = not bool(parsed["tanggal"])
-    need_items = bool(parsed["unparsed_item_lines"]) or (not resolved_items and not item_errors)
-
-    tanggal_final = parsed["tanggal"] or fallback_date
-    if need_date or need_items:
-        llm_res, llm_err = extract_opname_watermark_and_items(
-            img_bytes,
-            caption,
-            fallback_date,
-            aset,
-            format_boq_cheat_sheet(aset, max_items=35),
-            need_date=need_date,
-            need_items=need_items,
-        )
-        if need_date and llm_res.get("tanggal"):
-            norm_dt = parse_opname_date_str(str(llm_res["tanggal"]))
-            if norm_dt:
-                tanggal_final = norm_dt
-        if need_items and llm_res.get("items"):
-            for llm_it in llm_res["items"]:
-                boq_item, b_err = resolve_boq_item(
-                    aset, str(llm_it.get("item_key", "")), lokasi=lokasi, wilayah=wilayah
-                )
-                try:
-                    vol = float(llm_it.get("volume", 0))
-                except (TypeError, ValueError):
-                    vol = 0.0
-                if boq_item and vol > 0:
-                    resolved_items.append(
-                        {
-                            "item": boq_item,
-                            "p": None,
-                            "l": None,
-                            "t": None,
-                            "jumlah": None,
-                            "volume": vol,
-                            "satuan": str(llm_it.get("satuan") or boq_item.satuan),
-                            "material_status": "",
-                        }
-                    )
-        if llm_err and not resolved_items:
-            item_errors.append(llm_err)
-
-    if item_errors or not resolved_items:
-        detail = "\n".join(item_errors) if item_errors else "Tidak ada item BOQ valid pada bagian `Item:`."
-        send_whatsapp_message(
-            reply_chat_id,
-            f"⚠️ *Opname Ditolak ({aset})*\n{detail}\n\nKetik `/format {aset}` untuk daftar keyword item resmi.",
-            session,
-        )
+    if errors or not parsed_entries:
+        err_msg = "\n".join(f"- {e}" for e in errors[:10]) if errors else "Baris opname tidak valid."
+        send_whatsapp_message(reply_chat_id, f"⚠️ *Scan Opname Perlu Perbaikan*\n{err_msg}", session)
         return
 
-    if not settings.OPNAME_EXCEL_SHARE_LINK:
-        send_whatsapp_message(
-            reply_chat_id,
-            "❌ `OPNAME_EXCEL_SHARE_LINK` belum diatur di server bot.",
-            session,
-        )
-        return
-
-    dt_final = datetime.datetime.strptime(tanggal_final, "%Y-%m-%d")
-    cycle_m, cycle_y = resolve_billing_cycle(dt_final)
+    slots_by_id: dict[str, dict] = {}
     _, table_name, _ = ASSET_TO_TABLE[aset]
-    opname_id = f"OPN-{dt_final:%y%m%d}-{uuid.uuid4().hex[:6].upper()}"
+    for ent in parsed_entries:
+        dt_obj = datetime.datetime.strptime(ent["tanggal"], "%Y-%m-%d").date()
+        cm, cy = resolve_billing_cycle(dt_obj)
+        ck = f"{cy:04d}-{cm:02d}"
+        sid = f"XLS-{cy % 100:02d}{cm:02d}-{aset}-{ent['wilayah']}-{ent['vendor']}-{ent['minggu']}"
+        if sid not in slots_by_id:
+            slots_by_id[sid] = {
+                "slot_id": sid,
+                "cycle_key": ck,
+                "cycle_month": cm,
+                "cycle_year": cy,
+                "aset": aset,
+                "wilayah": ent["wilayah"],
+                "vendor": ent["vendor"],
+                "minggu": ent["minggu"],
+                "table_name": table_name,
+                "entries": [],
+            }
+        ent_copy = {k: v for k, v in ent.items() if k != "item"}
+        slots_by_id[sid]["entries"].append(ent_copy)
 
-    month_names = [
-        "Januari", "Februari", "Maret", "April", "Mei", "Juni",
-        "Juli", "Agustus", "September", "Oktober", "November", "Desember",
-    ]
-    folder_path = f"Dokumentasi Opname/{aset}/{dt_final.year}/{month_names[dt_final.month - 1]}/{dt_final.day:02d}"
+    first_slot = next(iter(slots_by_id.values()))
+    scan_id = f"SCAN-{datetime.datetime.now():%y%m%d}-{uuid.uuid4().hex[:4].upper()}"
+    src_ext = ".pdf" if is_pdf else ".jpg"
+    src_arch_path = _save_opname_archive_file(first_slot["cycle_key"], aset, f"{scan_id}_signed{src_ext}", raw_bytes)
+    xlsx_bytes = build_prefilled_standard_xlsx(aset, first_slot["cycle_month"], first_slot["cycle_year"], parsed_entries)
+    xlsx_name = f"{aset}_{first_slot['wilayah']}_{first_slot['vendor']}_{first_slot['minggu']}_{scan_id}.xlsx"
+    xlsx_arch_path = _save_opname_archive_file(first_slot["cycle_key"], aset, xlsx_name, xlsx_bytes)
 
-    try:
-        link_foto = upload_photo_to_onedrive(img_bytes, f"{opname_id}.jpg", folder_path=folder_path)
-    except Exception as e:
-        unmark_processed(processing_key)
-        send_whatsapp_message(reply_chat_id, f"❌ Gagal upload foto opname ke OneDrive: {e}", session)
-        return
-
-    excel_rows = []
-    for entry in resolved_items:
-        it = entry["item"]
-        has_dims = any(entry[k] is not None for k in ("p", "l", "t", "jumlah"))
-        vol_cell = "=[@[Volume_Calc]]" if has_dims else entry["volume"]
-        excel_rows.append(
-            [
-                opname_id,
-                kode_temuan or "-",
-                tanggal_final,
-                aset,
-                wilayah,
-                lokasi,
-                jalur_lajur,
-                canonical_vendor,
-                it.item_key,
-                it.uraian,
-                entry["p"],
-                entry["l"],
-                entry["t"],
-                entry["jumlah"],
-                '=IF(COUNT([@P]:[@Jumlah])>0,PRODUCT([@P]:[@Jumlah]),"")',
-                vol_cell,
-                entry["satuan"],
-                entry["material_status"],
-                sender_label,
-                link_foto,
-                parsed["keterangan"],
-            ]
-        )
-
-    # Resolve monthly OneDrive workbook automatically (cache in SQLite opname_workbooks)
-    target_di: tuple[str, str] | None = None
-    target_drive_id = ""
-    target_item_id = ""
-    cycle_key = f"{cycle_y:04d}-{cycle_m:02d}"
-    if settings.OPNAME_AUTO_MONTHLY:
-        try:
-            conn_wb = sqlite3.connect(settings.DB_URL)
-            cached = conn_wb.execute(
-                "SELECT drive_id, item_id FROM opname_workbooks WHERE cycle_key = ?",
-                (cycle_key,),
-            ).fetchone()
-            conn_wb.close()
-            if cached and cached[0] and cached[1]:
-                target_drive_id, target_item_id = cached[0], cached[1]
-            else:
-                target_drive_id, target_item_id, wb_web_url = ensure_monthly_opname_workbook(
-                    settings.OPNAME_EXCEL_SHARE_LINK, cycle_m, cycle_y
-                )
-                conn_wb = sqlite3.connect(settings.DB_URL)
-                conn_wb.execute(
-                    "INSERT OR REPLACE INTO opname_workbooks (cycle_key, drive_id, item_id, web_url, created_at) VALUES (?, ?, ?, ?, ?)",
-                    (cycle_key, target_drive_id, target_item_id, wb_web_url, datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")),
-                )
-                conn_wb.commit()
-                conn_wb.close()
-            target_di = (target_drive_id, target_item_id)
-        except Exception as e:
-            unmark_processed(processing_key)
-            send_whatsapp_message(reply_chat_id, f"❌ Gagal menyiapkan file Excel siklus {cycle_key}: {e}", session)
-            return
-
-    try:
-        append_opname_rows(
-            settings.OPNAME_EXCEL_SHARE_LINK,
-            table_name,
-            excel_rows,
-            target_drive_item=target_di,
-        )
-    except Exception as e:
-        if settings.OPNAME_AUTO_MONTHLY:
-            conn_wb = sqlite3.connect(settings.DB_URL)
-            conn_wb.execute("DELETE FROM opname_workbooks WHERE cycle_key = ?", (cycle_key,))
-            conn_wb.commit()
-            conn_wb.close()
-        unmark_processed(processing_key)
-        send_whatsapp_message(reply_chat_id, f"❌ Gagal menulis data opname ke `{table_name}`: {e}", session)
-        return
-
-    conn = sqlite3.connect(settings.DB_URL)
-    c = conn.cursor()
-    created_now = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    for entry in resolved_items:
-        it = entry["item"]
-        c.execute(
-            """
-            INSERT INTO opname_entries (
-                opname_id, aset, wilayah, tanggal, lokasi, vendor,
-                item_key, volume, satuan, table_name, status, created_at, pic, kode_temuan,
-                drive_id, item_id
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'ACTIVE', ?, ?, ?, ?, ?)
-            """,
-            (
-                opname_id,
-                aset,
-                wilayah,
-                tanggal_final,
-                lokasi,
-                canonical_vendor,
-                it.item_key,
-                entry["volume"],
-                entry["satuan"],
-                table_name,
-                created_now,
-                sender_label,
-                kode_temuan or "-",
-                target_drive_id,
-                target_item_id,
-            ),
-        )
-    conn.commit()
-    conn.close()
-
-    item_summary = "\n".join(
-        f"  • *{e['item'].keyword}* (`{e['item'].item_key}`): *{e['volume']:g} {e['satuan']}*"
-        for e in resolved_items
+    _stage_pending_confirmation(
+        scan_id,
+        "SCAN_OCR",
+        aset,
+        list(slots_by_id.values()),
+        xlsx_arch_path,
+        src_arch_path,
+        warnings,
     )
-    msg = (
-        f"✅ *Opname Berhasil Dicatat*\n"
-        f"ID: `{opname_id}`\n"
-        f"Tanggal: {tanggal_final} (Siklus {month_names[cycle_m - 1]} {cycle_y})\n"
-        f"Aset / Wilayah: *{aset}* / *{wilayah}*\n"
-        f"Vendor: *{canonical_vendor}*\n"
-        f"Lokasi: {lokasi}\n"
-        f"Item:\n{item_summary}\n"
-        f"_Salah input? Ketik `/undo {opname_id}`_"
+
+    warn_block = ("\n\n⚠️ *Catatan Roster:*\n" + "\n".join(f"• {w}" for w in warnings)) if warnings else ""
+    preview_msg = (
+        f"🔎 *Hasil Scan Opname (`{scan_id}`)*\n"
+        f"Aset / Minggu: *{aset}* / *{first_slot['minggu']}* | Vendor: *{first_slot['vendor']}*\n"
+        + "\n".join(preview_lines[:20])
+        + warn_block
+        + f"\n\n✅ Ketik `/simpan {scan_id}` jika angka sudah benar, atau edit file Excel di bawah lalu kirim balik ke chat ini."
     )
-    send_whatsapp_message(reply_chat_id, msg, session)
+    send_whatsapp_message(reply_chat_id, preview_msg, session)
+    send_whatsapp_document(
+        reply_chat_id,
+        xlsx_bytes,
+        xlsx_name,
+        caption=f"Excel hasil OCR `{scan_id}`. Edit jika ada koreksi, atau balas `/simpan {scan_id}`.",
+        session=session,
+    )
 
 def handle_whatsapp_command(reply_chat_id, command, session):
     try:
@@ -1118,12 +1539,20 @@ def process_message(message: dict):
     # flooding the logs and generating unnecessary WAHA API calls.
     is_group = "@g.us" in sender_chat_id
     body = message.get("body", "")
+    media_filename, media_mimetype = extract_media_metadata(message)
+    is_xlsx_msg = bool(
+        message.get("hasMedia")
+        and (
+            media_filename.lower().endswith(".xlsx")
+            or "spreadsheetml" in media_mimetype
+        )
+    )
     if is_group:
         body_clean = body.strip().lower() if isinstance(body, str) else ""
-        is_cmd = body_clean.startswith(("/rekap", "/format", "/undo"))
+        is_cmd = body_clean.startswith(("/rekap", "/undo", "/simpan", "/status opname", "/arsip"))
         has_sla_code = message.get("hasMedia") and extract_kode_from_text(body)
-        has_opname_trig = bool(extract_opname_trigger(body))
-        if not is_cmd and not has_sla_code and not has_opname_trig:
+        has_scan_trig = bool(extract_scan_opname_hint(body))
+        if not is_cmd and not has_sla_code and not has_scan_trig and not is_xlsx_msg:
             return  # Silently drop irrelevant group messages
     
     print(f"\n--- New WAHA Message Received ---")
@@ -1139,10 +1568,20 @@ def process_message(message: dict):
     # Intercept WhatsApp Commands
     if body and isinstance(body, str):
         text_lower = body.strip().lower()
-        if text_lower.startswith("/format"):
+        if text_lower.startswith("/simpan"):
             if not mark_processed(processing_key):
                 return
-            handle_format_command(reply_chat_id, body, session)
+            handle_simpan_command(reply_chat_id, sender_label, body, session)
+            return
+        if text_lower.startswith("/status opname"):
+            if not mark_processed(processing_key):
+                return
+            handle_status_opname_command(reply_chat_id, text_lower, session)
+            return
+        if text_lower.startswith("/arsip"):
+            if not mark_processed(processing_key):
+                return
+            handle_arsip_command(reply_chat_id, body, session)
             return
         if text_lower.startswith("/undo"):
             if not mark_processed(processing_key):
@@ -1167,19 +1606,39 @@ def process_message(message: dict):
         print(f"Skipping duplicate message {processing_key}...")
         return
 
-    # Route Opname messages before SLA flow (supports both photo and missing-photo rejection)
-    opname_trigger = extract_opname_trigger(body)
-    if opname_trigger:
-        process_opname_message(
+    # Route Scan Opname (signed paper photo / PDF -> OCR preview + pre-filled .xlsx -> /simpan)
+    scan_hint = extract_scan_opname_hint(body if isinstance(body, str) else "")
+    if scan_hint:
+        process_opname_scan_message(
             message,
             reply_chat_id,
             sender_label,
             body if isinstance(body, str) else "",
-            opname_trigger,
+            scan_hint,
             processing_key,
             session,
         )
         return
+
+    # Route Standard .xlsx Opname Workbook Drop-In
+    if is_xlsx_msg:
+        try:
+            xlsx_bytes = _extract_image_bytes_from_message(message)
+        except Exception as dl_err:
+            unmark_processed(processing_key)
+            send_whatsapp_message(reply_chat_id, f"❌ Gagal mengunduh file Excel opname: {dl_err}", session)
+            return
+        handled = process_opname_xlsx_message(
+            xlsx_bytes,
+            media_filename,
+            reply_chat_id,
+            sender_label,
+            body if isinstance(body, str) else "",
+            processing_key,
+            session,
+        )
+        if handled:
+            return
         
     if message.get("hasMedia"):
         caption = message.get("body", "")
