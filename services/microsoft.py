@@ -169,31 +169,55 @@ def find_col_letter(values, target_header, default_col, start_col_idx):
                 return col_num_to_letter(start_col_idx + col_idx)
     return default_col
 
-def upload_photo_to_onedrive(file_bytes: bytes, filename: str, folder_path: str = "Dokumentasi SLA") -> str:
+def upload_file_to_onedrive(
+    file_bytes: bytes,
+    filename: str,
+    folder_path: str,
+    content_type: str = "application/octet-stream",
+) -> tuple[str, str]:
+    """Upload bytes to `/me/drive/root:/{folder_path}/{filename}` and return `(item_id, web_url)`."""
     token = get_ms_token()
     session = get_retry_session()
-    
-    # 1. Upload to the specified nested folder path
+
     upload_url = f"https://graph.microsoft.com/v1.0/me/drive/root:/{folder_path}/{filename}:/content"
     headers = {
         "Authorization": f"Bearer {token}",
-        "Content-Type": "image/jpeg"
+        "Content-Type": content_type,
     }
-    resp = session.put(upload_url, headers=headers, data=file_bytes)
+    resp = session.put(upload_url, headers=headers, data=file_bytes, timeout=60)
     resp.raise_for_status()
-    item_id = resp.json()["id"]
-    
-    # 2. Create sharing link
+    meta = resp.json()
+    item_id = meta["id"]
+    web_url = meta.get("webUrl", "")
+
     link_url = f"https://graph.microsoft.com/v1.0/me/drive/items/{item_id}/createLink"
     link_body = {"type": "view", "scope": "anonymous"}
     link_headers = {
         "Authorization": f"Bearer {token}",
-        "Content-Type": "application/json"
+        "Content-Type": "application/json",
     }
-    link_resp = session.post(link_url, headers=link_headers, json=link_body)
-    link_resp.raise_for_status()
-    
-    return link_resp.json()["link"]["webUrl"]
+    link_resp = session.post(link_url, headers=link_headers, json=link_body, timeout=20)
+    if link_resp.ok:
+        web_url = link_resp.json().get("link", {}).get("webUrl", web_url)
+    elif not web_url:
+        link_resp.raise_for_status()
+
+    return item_id, web_url
+
+
+def download_file_from_onedrive(item_id: str) -> bytes:
+    """Download file bytes from OneDrive by drive item ID."""
+    token = get_ms_token()
+    session = get_retry_session()
+    url = f"https://graph.microsoft.com/v1.0/me/drive/items/{item_id}/content"
+    resp = session.get(url, headers={"Authorization": f"Bearer {token}"}, timeout=60)
+    resp.raise_for_status()
+    return resp.content
+
+
+def upload_photo_to_onedrive(file_bytes: bytes, filename: str, folder_path: str = "Dokumentasi SLA") -> str:
+    _, web_url = upload_file_to_onedrive(file_bytes, filename, folder_path, content_type="image/jpeg")
+    return web_url
 
 def _resolve_share_drive_item_full(session, headers: dict, share_url: str) -> tuple[str, str, str, str]:
     encoded_url = encode_share_url(share_url)

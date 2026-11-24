@@ -96,20 +96,16 @@ class OpnameWorkflowTests(unittest.TestCase):
     def setUp(self):
         self.tmpdir = tempfile.TemporaryDirectory()
         self.db_path = os.path.join(self.tmpdir.name, "test_vista.db")
-        self.archive_dir = os.path.join(self.tmpdir.name, "opname_archive")
         self.orig_db = settings.DB_URL
         self.orig_opname_link = settings.OPNAME_EXCEL_SHARE_LINK
-        self.orig_archive = settings.OPNAME_ARCHIVE_DIR
         settings.DB_URL = self.db_path
         settings.OPNAME_EXCEL_SHARE_LINK = "https://1drv.ms/x/s!TEST_OPNAME_LINK"
-        settings.OPNAME_ARCHIVE_DIR = self.archive_dir
         main.session_ready_at = 0
         main.init_db()
 
     def tearDown(self):
         settings.DB_URL = self.orig_db
         settings.OPNAME_EXCEL_SHARE_LINK = self.orig_opname_link
-        settings.OPNAME_ARCHIVE_DIR = self.orig_archive
         self.tmpdir.cleanup()
 
     def test_trigger_separation_and_billing_cycle(self):
@@ -164,6 +160,8 @@ class OpnameWorkflowTests(unittest.TestCase):
         self.assertAlmostEqual(sl.entries[0]["volume"], 0.2)
         self.assertAlmostEqual(sl.entries[-1]["volume"], 18.5)
 
+    @patch("main.download_file_from_onedrive")
+    @patch("main.upload_file_to_onedrive", return_value=("OD_ITM_XLS", "https://1drv.ms/u/ARC_XLS"))
     @patch("main.replace_opname_slot_rows", return_value=(0, 2))
     @patch("main.ensure_monthly_opname_workbook", return_value=("DRV1", "ITM_NOV", "https://1drv.ms/x/NOV"))
     @patch("main.send_whatsapp_document")
@@ -174,6 +172,8 @@ class OpnameWorkflowTests(unittest.TestCase):
         mock_send_doc,
         mock_ensure,
         mock_replace,
+        mock_upload_arc,
+        mock_dl_arc,
     ):
         # 1) Initial drop of M1 file
         xlsx_v1 = _make_sample_pv_xlsx(
@@ -184,6 +184,7 @@ class OpnameWorkflowTests(unittest.TestCase):
                 ]
             }
         )
+        mock_dl_arc.return_value = xlsx_v1
         with patch("main._extract_image_bytes_from_message", return_value=xlsx_v1):
             main.process_message(
                 {
@@ -196,9 +197,12 @@ class OpnameWorkflowTests(unittest.TestCase):
                 }
             )
         mock_ensure.assert_called_once_with(settings.OPNAME_EXCEL_SHARE_LINK, 11, 2026)
+        mock_upload_arc.assert_called_once()
         mock_replace.assert_called_once()
         slot_id_m1 = "XLS-2611-PV-W1-MIJ-M1"
         self.assertEqual(mock_replace.call_args[0][2], slot_id_m1)
+        # Verify TBL_LOG_* row stores OneDrive link instead of local server path
+        self.assertEqual(mock_replace.call_args[0][3][0][19], "https://1drv.ms/u/ARC_XLS")
         self.assertIn(slot_id_m1, mock_send.call_args[0][1])
 
         # 2) Revised M1 + new M2 in same workbook -> replaces M1 without double counting and adds M2
@@ -240,12 +244,14 @@ class OpnameWorkflowTests(unittest.TestCase):
         self.assertIn("21 Slot", stat_reply)
         self.assertIn("PV | W1 | MIJ : M1, M2", stat_reply)
 
-        # 4) /arsip sends stored .xlsx back
+        # 4) /arsip downloads from OneDrive item_id and sends document + OneDrive URL
         main.process_message(
             {"id": {"_serialized": "false_628111@c.us_ARS1"}, "from": "628111@c.us", "hasMedia": False, "body": f"/arsip {slot_id_m1}", "_session": "default"}
         )
+        mock_dl_arc.assert_called_once_with("OD_ITM_XLS")
         mock_send_doc.assert_called_once()
         self.assertEqual(mock_send_doc.call_args[0][2], "PV_W1_MIJ_2026.xlsx")
+        self.assertIn("https://1drv.ms/u/ARC_XLS", mock_send_doc.call_args[1]["caption"])
 
         # 5) /undo targets exact OneDrive workbook
         with patch("main.delete_opname_rows_by_id", return_value=1) as mock_del:
@@ -259,6 +265,7 @@ class OpnameWorkflowTests(unittest.TestCase):
                 target_drive_item=("DRV1", "ITM_NOV"),
             )
 
+    @patch("main.upload_file_to_onedrive", return_value=("OD_ITM_MIS", "https://1drv.ms/u/ARC_MIS"))
     @patch("main.replace_opname_slot_rows", return_value=(0, 1))
     @patch("main.ensure_monthly_opname_workbook", return_value=("DRV1", "ITM_NOV", "https://1drv.ms/x/NOV"))
     @patch("main.send_whatsapp_message")
@@ -267,6 +274,7 @@ class OpnameWorkflowTests(unittest.TestCase):
         mock_send,
         mock_ensure,
         mock_replace,
+        mock_upload_arc,
     ):
         # Put MIJ (official W1 vendor) on W2 location -> bot must ask confirmation first!
         xlsx_mismatch = _make_sample_pv_xlsx(
@@ -303,6 +311,7 @@ class OpnameWorkflowTests(unittest.TestCase):
         mock_replace.assert_called_once()
         self.assertIn("Opname Berhasil Dicatat", mock_send.call_args[0][1])
 
+    @patch("main.upload_file_to_onedrive", return_value=("OD_ITM_SCAN", "https://1drv.ms/u/ARC_SCAN"))
     @patch("main.replace_opname_slot_rows", return_value=(0, 2))
     @patch("main.ensure_monthly_opname_workbook", return_value=("DRV1", "ITM_NOV", "https://1drv.ms/x/NOV"))
     @patch("main.extract_opname_form_ocr")
@@ -315,6 +324,7 @@ class OpnameWorkflowTests(unittest.TestCase):
         mock_ocr,
         mock_ensure,
         mock_replace,
+        mock_upload_arc,
     ):
         mock_ocr.return_value = (
             {
@@ -392,6 +402,7 @@ class OpnameWorkflowTests(unittest.TestCase):
         mock_replace.assert_called_once()
         self.assertEqual(mock_replace.call_args[0][2], "XLS-2611-PV-W1-MIJ-M3")
 
+    @patch("main.upload_file_to_onedrive", return_value=("OD_ITM_DEC", "https://1drv.ms/u/ARC_DEC"))
     @patch("main.replace_opname_slot_rows", return_value=(0, 1))
     @patch("main.ensure_monthly_opname_workbook")
     @patch("main.send_whatsapp_message")
@@ -400,6 +411,7 @@ class OpnameWorkflowTests(unittest.TestCase):
         mock_send,
         mock_ensure,
         mock_replace,
+        mock_upload_arc,
     ):
         mock_ensure.side_effect = [
             ("DRV1", "ITM_DEC", "https://1drv.ms/x/DEC"),

@@ -12,7 +12,6 @@ class Settings(BaseSettings):
     
     ADMIN_PHONE: str = ""
     DB_URL: str = "processed_messages.db"
-    OPNAME_ARCHIVE_DIR: str = "opname_archive"
     
     ALERT_EMAIL: str = "aistamer@outlook.com"
     SMTP_SERVER: str = "smtp.gmail.com"

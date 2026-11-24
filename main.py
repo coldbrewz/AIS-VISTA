@@ -45,9 +45,11 @@ from services.whatsapp import send_whatsapp_document, send_whatsapp_message
 from services.microsoft import (
     append_opname_rows,
     delete_opname_rows_by_id,
+    download_file_from_onedrive,
     ensure_monthly_opname_workbook,
     replace_opname_slot_rows,
     update_excel_row,
+    upload_file_to_onedrive,
     upload_photo_to_onedrive,
 )
 
@@ -553,15 +555,22 @@ def init_db():
                  minggu TEXT,
                  source_type TEXT,
                  file_path TEXT,
+                 item_id TEXT DEFAULT '',
+                 web_url TEXT DEFAULT '',
                  row_count INTEGER,
                  created_at TEXT
                  )''')
-    # Upgrade older opname_entries schema gracefully if columns missing
+    # Upgrade older schemas gracefully if columns missing
     existing_cols = {row[1] for row in c.execute("PRAGMA table_info(opname_entries)").fetchall()}
     if "drive_id" not in existing_cols:
         c.execute("ALTER TABLE opname_entries ADD COLUMN drive_id TEXT DEFAULT ''")
     if "item_id" not in existing_cols:
         c.execute("ALTER TABLE opname_entries ADD COLUMN item_id TEXT DEFAULT ''")
+    arc_cols = {row[1] for row in c.execute("PRAGMA table_info(opname_archives)").fetchall()}
+    if "item_id" not in arc_cols:
+        c.execute("ALTER TABLE opname_archives ADD COLUMN item_id TEXT DEFAULT ''")
+    if "web_url" not in arc_cols:
+        c.execute("ALTER TABLE opname_archives ADD COLUMN web_url TEXT DEFAULT ''")
     conn.commit()
     conn.close()
 
@@ -606,13 +615,23 @@ def _extract_image_bytes_from_message(message: dict) -> bytes:
     return download_whatsapp_media(internal_media_url)
 
 
-def _save_opname_archive_file(cycle_key: str, aset: str, filename: str, data_bytes: bytes) -> str:
+def _archive_opname_file_to_onedrive(
+    cycle_key: str,
+    aset: str,
+    filename: str,
+    data_bytes: bytes,
+    mimetype: str,
+) -> dict:
+    """Upload opname .xlsx or signed scan to OneDrive `/Arsip Opname/{cycle_key}/{aset}` (zero local disk storage)."""
     safe_name = re.sub(r"[^A-Za-z0-9_.\-]+", "_", os.path.basename(filename or "opname.bin"))
-    target_dir = Path(settings.OPNAME_ARCHIVE_DIR) / cycle_key / aset
-    target_dir.mkdir(parents=True, exist_ok=True)
-    target_path = target_dir / safe_name
-    target_path.write_bytes(data_bytes)
-    return str(target_path)
+    folder_path = f"Arsip Opname/{cycle_key}/{aset}"
+    item_id, web_url = upload_file_to_onedrive(data_bytes, safe_name, folder_path, content_type=mimetype)
+    return {
+        "filename": safe_name,
+        "item_id": item_id,
+        "web_url": web_url,
+        "mimetype": mimetype,
+    }
 
 
 def _render_pdf_pages_to_jpeg(pdf_bytes: bytes, max_pages: int = 5) -> list[bytes]:
@@ -706,13 +725,14 @@ def _commit_opname_slots(
     slots_data: list[dict],
     sender_label: str,
     source_type: str,
-    archive_paths: list[tuple[str, str]],
+    archive_items: list[tuple[str, dict]],
 ) -> list[dict]:
     if not settings.OPNAME_EXCEL_SHARE_LINK:
         raise Exception("`OPNAME_EXCEL_SHARE_LINK` belum diatur di server bot.")
 
     results = []
     created_now = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    archive_ref = next((it.get("web_url") for _, it in archive_items if it.get("web_url")), "-")
     for sl in slots_data:
         slot_id = sl["slot_id"]
         cycle_key = sl["cycle_key"]
@@ -727,7 +747,6 @@ def _commit_opname_slots(
 
         target_di, drive_id, item_id = _resolve_cycle_target_di(cycle_m, cycle_y)
         excel_rows = []
-        archive_ref = archive_paths[0][1] if archive_paths else "-"
         for ent in entries:
             has_dims = any(ent.get(k) is not None for k in ("p", "l", "t", "jml"))
             vol_cell = ent["volume"]
@@ -814,15 +833,28 @@ def _commit_opname_slots(
                     item_id,
                 ),
             )
-        for f_src_type, f_path in archive_paths:
-            if f_path:
+        for f_src_type, arc in archive_items:
+            if arc and (arc.get("item_id") or arc.get("web_url")):
                 c.execute(
                     """
                     INSERT INTO opname_archives (
-                        slot_id, cycle_key, aset, wilayah, vendor, minggu, source_type, file_path, row_count, created_at
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        slot_id, cycle_key, aset, wilayah, vendor, minggu, source_type, file_path, item_id, web_url, row_count, created_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
-                    (slot_id, cycle_key, aset, wilayah, vendor, minggu, f_src_type, f_path, len(entries), created_now),
+                    (
+                        slot_id,
+                        cycle_key,
+                        aset,
+                        wilayah,
+                        vendor,
+                        minggu,
+                        f_src_type,
+                        arc.get("filename", ""),
+                        arc.get("item_id", ""),
+                        arc.get("web_url", ""),
+                        len(entries),
+                        created_now,
+                    ),
                 )
         conn.commit()
         conn.close()
@@ -923,14 +955,14 @@ def handle_simpan_command(reply_chat_id: str, sender_label: str, body_text: str,
         return
 
     slots_data = json.loads(payload_json)
-    archive_files = []
+    archive_items = []
     if source_path:
-        archive_files.append(("SCAN_SRC", source_path))
+        archive_items.append(("SCAN_SRC", json.loads(source_path)))
     if xlsx_path:
-        archive_files.append(("XLSX", xlsx_path))
+        archive_items.append(("XLSX", json.loads(xlsx_path)))
 
     try:
-        results = _commit_opname_slots(slots_data, sender_label, kind, archive_files)
+        results = _commit_opname_slots(slots_data, sender_label, kind, archive_items)
     except Exception as e:
         send_whatsapp_message(reply_chat_id, f"❌ Gagal menyimpan `{pending_id}` ke OneDrive: {e}", session)
         return
@@ -989,7 +1021,7 @@ def handle_arsip_command(reply_chat_id: str, body_text: str, session: str) -> No
     conn = sqlite3.connect(settings.DB_URL)
     if arg.startswith("XLS-"):
         rows = conn.execute(
-            "SELECT DISTINCT file_path, source_type, slot_id FROM opname_archives WHERE UPPER(slot_id) = ? ORDER BY archive_id DESC LIMIT 3",
+            "SELECT DISTINCT file_path, source_type, slot_id, COALESCE(item_id, ''), COALESCE(web_url, '') FROM opname_archives WHERE UPPER(slot_id) = ? ORDER BY archive_id DESC LIMIT 3",
             (arg,),
         ).fetchall()
     else:
@@ -998,36 +1030,44 @@ def handle_arsip_command(reply_chat_id: str, body_text: str, session: str) -> No
         cyc_tok = toks[1] if len(toks) > 1 else ""
         if cyc_tok:
             rows = conn.execute(
-                "SELECT DISTINCT file_path, source_type, slot_id FROM opname_archives WHERE aset = ? AND cycle_key = ? ORDER BY archive_id DESC LIMIT 3",
+                "SELECT DISTINCT file_path, source_type, slot_id, COALESCE(item_id, ''), COALESCE(web_url, '') FROM opname_archives WHERE aset = ? AND cycle_key = ? ORDER BY archive_id DESC LIMIT 3",
                 (aset_tok, cyc_tok),
             ).fetchall()
         else:
             rows = conn.execute(
-                "SELECT DISTINCT file_path, source_type, slot_id FROM opname_archives WHERE aset = ? ORDER BY archive_id DESC LIMIT 3",
+                "SELECT DISTINCT file_path, source_type, slot_id, COALESCE(item_id, ''), COALESCE(web_url, '') FROM opname_archives WHERE aset = ? ORDER BY archive_id DESC LIMIT 3",
                 (aset_tok,),
             ).fetchall()
     conn.close()
 
     sent = 0
-    for f_path, src_type, sl_id in rows:
-        p = Path(f_path)
-        if not p.exists():
-            continue
-        ext = p.suffix.lower()
+    for f_name, src_type, sl_id, item_id, web_url in rows:
+        fname = os.path.basename(f_name or f"{sl_id}.xlsx")
+        ext = os.path.splitext(fname)[1].lower()
         mime = (
             "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
             if ext == ".xlsx"
             else ("application/pdf" if ext == ".pdf" else "image/jpeg")
         )
-        send_whatsapp_document(
-            reply_chat_id,
-            p.read_bytes(),
-            p.name,
-            caption=f"📁 Arsip `{sl_id}` ({src_type})",
-            mimetype=mime,
-            session=session,
-        )
-        sent += 1
+        link_line = f"\n🔗 {web_url}" if web_url else ""
+        if item_id:
+            try:
+                file_bytes = download_file_from_onedrive(item_id)
+                send_whatsapp_document(
+                    reply_chat_id,
+                    file_bytes,
+                    fname,
+                    caption=f"📁 Arsip `{sl_id}` ({src_type}){link_line}",
+                    mimetype=mime,
+                    session=session,
+                )
+                sent += 1
+                continue
+            except Exception as dl_err:
+                print(f"Warning: Gagal unduh arsip {item_id} dari OneDrive: {dl_err}")
+        if web_url:
+            send_whatsapp_message(reply_chat_id, f"📁 Arsip `{sl_id}` ({src_type}): {web_url}", session)
+            sent += 1
     if sent == 0:
         send_whatsapp_message(reply_chat_id, f"⚠️ Arsip `{arg}` tidak ditemukan.", session)
 
@@ -1149,7 +1189,15 @@ def process_opname_xlsx_message(
 
     first_sl = res.slots[0]
     arch_name = filename or f"{first_sl.slot_id}.xlsx"
-    xlsx_arch_path = _save_opname_archive_file(first_sl.cycle_key, first_sl.aset, arch_name, file_bytes)
+    xlsx_mime = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+    try:
+        xlsx_arch_info = _archive_opname_file_to_onedrive(
+            first_sl.cycle_key, first_sl.aset, arch_name, file_bytes, xlsx_mime
+        )
+    except Exception as arch_err:
+        unmark_processed(processing_key)
+        send_whatsapp_message(reply_chat_id, f"❌ Gagal arsip file Excel ke OneDrive: {arch_err}", session)
+        return True
     slots_data = json.loads(_serialize_slots(res.slots))
 
     if res.roster_warnings:
@@ -1159,7 +1207,7 @@ def process_opname_xlsx_message(
             "XLSX_MISMATCH",
             res.aset or first_sl.aset,
             slots_data,
-            xlsx_arch_path,
+            json.dumps(xlsx_arch_info),
             "",
             res.roster_warnings,
         )
@@ -1176,7 +1224,7 @@ def process_opname_xlsx_message(
         return True
 
     try:
-        results = _commit_opname_slots(slots_data, sender_label, "XLSX", [("XLSX", xlsx_arch_path)])
+        results = _commit_opname_slots(slots_data, sender_label, "XLSX", [("XLSX", xlsx_arch_info)])
     except Exception as e:
         unmark_processed(processing_key)
         send_whatsapp_message(reply_chat_id, f"❌ Gagal menulis data Excel ke OneDrive: {e}", session)
@@ -1365,18 +1413,29 @@ def process_opname_scan_message(
     first_slot = next(iter(slots_by_id.values()))
     scan_id = f"SCAN-{datetime.datetime.now():%y%m%d}-{uuid.uuid4().hex[:4].upper()}"
     src_ext = ".pdf" if is_pdf else ".jpg"
-    src_arch_path = _save_opname_archive_file(first_slot["cycle_key"], aset, f"{scan_id}_signed{src_ext}", raw_bytes)
+    src_mime = "application/pdf" if is_pdf else "image/jpeg"
+    xlsx_mime = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
     xlsx_bytes = build_prefilled_standard_xlsx(aset, first_slot["cycle_month"], first_slot["cycle_year"], parsed_entries)
     xlsx_name = f"{aset}_{first_slot['wilayah']}_{first_slot['vendor']}_{first_slot['minggu']}_{scan_id}.xlsx"
-    xlsx_arch_path = _save_opname_archive_file(first_slot["cycle_key"], aset, xlsx_name, xlsx_bytes)
+    try:
+        src_arch_info = _archive_opname_file_to_onedrive(
+            first_slot["cycle_key"], aset, f"{scan_id}_signed{src_ext}", raw_bytes, src_mime
+        )
+        xlsx_arch_info = _archive_opname_file_to_onedrive(
+            first_slot["cycle_key"], aset, xlsx_name, xlsx_bytes, xlsx_mime
+        )
+    except Exception as arch_err:
+        unmark_processed(processing_key)
+        send_whatsapp_message(reply_chat_id, f"❌ Gagal arsip scan opname ke OneDrive: {arch_err}", session)
+        return
 
     _stage_pending_confirmation(
         scan_id,
         "SCAN_OCR",
         aset,
         list(slots_by_id.values()),
-        xlsx_arch_path,
-        src_arch_path,
+        json.dumps(xlsx_arch_info),
+        json.dumps(src_arch_info),
         warnings,
     )
 
