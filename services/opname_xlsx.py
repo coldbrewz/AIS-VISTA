@@ -591,9 +591,16 @@ def build_prefilled_standard_xlsx(
     ws.merge_cells(start_row=1, start_column=2, end_row=1, end_column=last_col_idx)
     ws.merge_cells(start_row=2, start_column=2, end_row=2, end_column=last_col_idx)
     ws.merge_cells(start_row=3, start_column=2, end_row=3, end_column=last_col_idx)
+    mon_idx = MONTH_ABBRS.index(mon_abbr) if mon_abbr in MONTH_ABBRS else 0
+    prev_full = MONTH_FULL_ID[MONTH_ABBRS[(mon_idx - 1) % 12]]
+    period_str = (
+        f"PERIODE: {mon_full} {cycle_year} (26 {prev_full} {cycle_year - 1} - 25 {mon_full} {cycle_year})"
+        if mon_idx == 0
+        else f"PERIODE: {mon_full} {cycle_year} (26 {prev_full} - 25 {mon_full} {cycle_year})"
+    )
     ws.cell(1, 2, "LAPORAN OPNAME DAN BACKUP QUANTITY (HASIL SCAN OCR)").font = Font(name="Calibri", size=11, bold=True)
     ws.cell(2, 2, f"PEKERJAAN {ASSET_TITLES.get(canon_aset, canon_aset).upper()}").font = Font(name="Calibri", size=11, bold=True)
-    ws.cell(3, 2, f"PERIODE BULAN {mon_full} {cycle_year} (SIKLUS 26 - 25)").font = Font(name="Calibri", size=10, bold=True)
+    ws.cell(3, 2, period_str).font = Font(name="Calibri", size=10, bold=True)
     for r_k in (1, 2, 3):
         ws.cell(r_k, 2).alignment = Alignment(horizontal="center", vertical="center")
 
