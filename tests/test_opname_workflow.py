@@ -26,47 +26,91 @@ def _make_sample_pv_xlsx(
     rows_by_month: dict[str, list[dict]],
     preset_wil: str = "W1",
     preset_vend: str = "MIJ",
+    use_header_meta: bool = True,
 ) -> bytes:
-    """Build a multi-month standard Option A Pavement workbook for unit tests (with >25-row capability)."""
+    """Build a multi-month standard Pavement workbook (header Wilayah/Vendor + ditto-capable columns)."""
     wb = openpyxl.Workbook()
     first = True
     for mon_abbr, row_list in rows_by_month.items():
         ws = wb.active if first else wb.create_sheet(mon_abbr)
         first = False
         ws.title = mon_abbr
-        headers = [
-            "No.", "Tanggal", "Minggu", "Kode Temuan", "Wilayah", "Vendor",
-            "STA / KM", "Jalur", "Lajur", "KODE", "Item / Keyword RAB",
-            "P", "L", "T", "Jml", "Vol. Vendor", "Vol. Opname", "Satuan",
-            "Baik", "Tdk Baik", "Keterangan",
-        ]
-        for i, h in enumerate(headers):
-            ws.cell(10, 2 + i, h)
-        for idx, rec in enumerate(row_list, start=11):
-            ws.cell(idx, 2, idx - 10)
-            ws.cell(idx, 3, rec["tanggal"])
-            ws.cell(idx, 4, rec.get("minggu", "M1"))
-            ws.cell(idx, 5, rec.get("kode_temuan", "-"))
-            ws.cell(idx, 6, rec.get("wilayah", preset_wil))
-            ws.cell(idx, 7, rec.get("vendor", preset_vend))
-            ws.cell(idx, 8, rec["lokasi"])
-            ws.cell(idx, 9, rec.get("jalur", "A"))
-            ws.cell(idx, 10, rec.get("lajur", "L1"))
-            ws.cell(idx, 12, rec["item"])
-            if rec.get("p") is not None:
-                ws.cell(idx, 13, rec["p"])
-            if rec.get("l") is not None:
-                ws.cell(idx, 14, rec["l"])
-            if rec.get("t") is not None:
-                ws.cell(idx, 15, rec["t"])
-            if rec.get("jml") is not None:
-                ws.cell(idx, 16, rec["jml"])
-            if rec.get("vol_vendor") is not None:
-                ws.cell(idx, 17, rec["vol_vendor"])
-            if rec.get("vol_opname") is not None:
-                ws.cell(idx, 18, rec["vol_opname"])
-            ws.cell(idx, 20, 1)
-            ws.cell(idx, 22, rec.get("ket", ""))
+        if use_header_meta:
+            ws.cell(7, 2, "Wilayah:")
+            ws.cell(7, 4, preset_wil)
+            ws.cell(7, 5, "Vendor:")
+            ws.cell(7, 6, preset_vend)
+            headers = [
+                "No.", "Tanggal", "Minggu", "Kode Temuan",
+                "STA / KM", "Jalur", "Lajur", "KODE", "Item / Keyword RAB",
+                "P", "L", "T", "Jml", "Vol. Vendor", "Vol. Opname", "Satuan",
+                "Baik", "Tdk Baik", "Keterangan",
+            ]
+            for i, h in enumerate(headers):
+                ws.cell(10, 2 + i, h)
+            for idx, rec in enumerate(row_list, start=11):
+                ws.cell(idx, 2, idx - 10)
+                if "tanggal" in rec and rec["tanggal"] is not None:
+                    ws.cell(idx, 3, rec["tanggal"])
+                if "minggu" in rec and rec["minggu"] is not None:
+                    ws.cell(idx, 4, rec["minggu"])
+                if "kode_temuan" in rec and rec["kode_temuan"] is not None:
+                    ws.cell(idx, 5, rec["kode_temuan"])
+                if "lokasi" in rec and rec["lokasi"] is not None:
+                    ws.cell(idx, 6, rec["lokasi"])
+                if "jalur" in rec and rec["jalur"] is not None:
+                    ws.cell(idx, 7, rec["jalur"])
+                if "lajur" in rec and rec["lajur"] is not None:
+                    ws.cell(idx, 8, rec["lajur"])
+                ws.cell(idx, 10, rec["item"])
+                if rec.get("p") is not None:
+                    ws.cell(idx, 11, rec["p"])
+                if rec.get("l") is not None:
+                    ws.cell(idx, 12, rec["l"])
+                if rec.get("t") is not None:
+                    ws.cell(idx, 13, rec["t"])
+                if rec.get("jml") is not None:
+                    ws.cell(idx, 14, rec["jml"])
+                if rec.get("vol_vendor") is not None:
+                    ws.cell(idx, 15, rec["vol_vendor"])
+                if rec.get("vol_opname") is not None:
+                    ws.cell(idx, 16, rec["vol_opname"])
+                ws.cell(idx, 18, 1)
+                ws.cell(idx, 20, rec.get("ket", ""))
+        else:
+            headers = [
+                "No.", "Tanggal", "Minggu", "Kode Temuan", "Wilayah", "Vendor",
+                "STA / KM", "Jalur", "Lajur", "KODE", "Item / Keyword RAB",
+                "P", "L", "T", "Jml", "Vol. Vendor", "Vol. Opname", "Satuan",
+                "Baik", "Tdk Baik", "Keterangan",
+            ]
+            for i, h in enumerate(headers):
+                ws.cell(10, 2 + i, h)
+            for idx, rec in enumerate(row_list, start=11):
+                ws.cell(idx, 2, idx - 10)
+                ws.cell(idx, 3, rec["tanggal"])
+                ws.cell(idx, 4, rec.get("minggu", "M1"))
+                ws.cell(idx, 5, rec.get("kode_temuan", "-"))
+                ws.cell(idx, 6, rec.get("wilayah", preset_wil))
+                ws.cell(idx, 7, rec.get("vendor", preset_vend))
+                ws.cell(idx, 8, rec["lokasi"])
+                ws.cell(idx, 9, rec.get("jalur", "A"))
+                ws.cell(idx, 10, rec.get("lajur", "L1"))
+                ws.cell(idx, 12, rec["item"])
+                if rec.get("p") is not None:
+                    ws.cell(idx, 13, rec["p"])
+                if rec.get("l") is not None:
+                    ws.cell(idx, 14, rec["l"])
+                if rec.get("t") is not None:
+                    ws.cell(idx, 15, rec["t"])
+                if rec.get("jml") is not None:
+                    ws.cell(idx, 16, rec["jml"])
+                if rec.get("vol_vendor") is not None:
+                    ws.cell(idx, 17, rec["vol_vendor"])
+                if rec.get("vol_opname") is not None:
+                    ws.cell(idx, 18, rec["vol_opname"])
+                ws.cell(idx, 20, 1)
+                ws.cell(idx, 22, rec.get("ket", ""))
         tot_r = 11 + len(row_list)
         ws.cell(tot_r, 2, "TOTAL PEMERIKSAAN")
 
@@ -452,6 +496,59 @@ class OpnameWorkflowTests(unittest.TestCase):
                 "XLS-2611-PV-W1-MIJ-M4",
                 target_drive_item=("DRV1", "ITM_NOV"),
             )
+
+    def test_xlsx_parser_supports_header_meta_and_ditto_rows(self):
+        # Blank template (no G2/G3 presets on DAFTAR_BOQ, only header Row 7 Wilayah/Vendor + ditto continuation rows)
+        wb = openpyxl.Workbook()
+        ws = wb.active
+        ws.title = "NOV"
+        ws.cell(7, 2, "Wilayah:")
+        ws.cell(7, 4, "W1")
+        ws.cell(7, 5, "Vendor:")
+        ws.cell(7, 6, "PT MIJ")
+        headers = [
+            "No.", "Tanggal", "Minggu", "Kode Temuan",
+            "STA / KM", "Jalur", "Lajur", "KODE", "Item / Keyword RAB",
+            "P", "L", "T", "Jml", "Vol. Vendor", "Vol. Opname", "Satuan",
+            "Baik", "Tdk Baik", "Keterangan",
+        ]
+        for i, h in enumerate(headers):
+            ws.cell(10, 2 + i, h)
+        # Row 11: full location details
+        ws.cell(11, 3, datetime.date(2026, 11, 20))
+        ws.cell(11, 4, "M4")
+        ws.cell(11, 5, "201126PV001")
+        ws.cell(11, 6, "KM 45+200")
+        ws.cell(11, 7, "A")
+        ws.cell(11, 8, "L1")
+        ws.cell(11, 10, "Permanen")
+        ws.cell(11, 16, 0.25)
+        # Row 12: same location -> blank Tanggal, Minggu, Kode Temuan, STA/KM, Jalur, Lajur
+        ws.cell(12, 10, "Hotmix")
+        ws.cell(12, 16, 0.58)
+        # Row 13: same location, M5 week override
+        ws.cell(13, 4, "M5")
+        ws.cell(13, 10, "Marka Putih")
+        ws.cell(13, 16, 18.0)
+
+        ws_boq = wb.create_sheet("DAFTAR_BOQ")
+        ws_boq.cell(1, 7, "PV")
+        buf = io.BytesIO()
+        wb.save(buf)
+
+        res = parse_standard_opname_xlsx(buf.getvalue(), filename="01_STD_Opname_Pavement.xlsx")
+        self.assertTrue(res.is_standard_form)
+        self.assertEqual(res.errors, [])
+        self.assertEqual(res.roster_warnings, [])
+        self.assertEqual(len(res.slots), 2)
+        m4_slot = [s for s in res.slots if s.minggu == "M4"][0]
+        m5_slot = [s for s in res.slots if s.minggu == "M5"][0]
+        self.assertEqual(m4_slot.slot_id, "XLS-2611-PV-W1-MIJ-M4")
+        self.assertEqual(len(m4_slot.entries), 2)
+        self.assertEqual(m4_slot.entries[1]["lokasi"], "KM 45+200")
+        self.assertEqual(m4_slot.entries[1]["jalur_lajur"], "A L1")
+        self.assertEqual(m4_slot.entries[1]["kode_temuan"], "201126PV001")
+        self.assertEqual(m5_slot.entries[0]["lokasi"], "KM 45+200")
 
 
 if __name__ == "__main__":

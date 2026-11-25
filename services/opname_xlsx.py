@@ -206,9 +206,35 @@ def _detect_asset_and_presets(wb_val: openpyxl.Workbook, filename: str, caption:
 def _find_header_and_map(ws) -> tuple[Optional[int], dict[str, int]]:
     for r in range(1, min(ws.max_row, 18) + 1):
         row_norm = {_norm_hdr(ws.cell(r, c).value): c for c in range(1, min(ws.max_column, 35) + 1) if ws.cell(r, c).value}
-        if ("item keyword rab" in row_norm or "uraian keyword item" in row_norm) and ("wilayah" in row_norm or "vendor" in row_norm):
+        if ("item keyword rab" in row_norm or "uraian keyword item" in row_norm) and any(
+            k in row_norm for k in ("tanggal", "tanggal pekerjaan", "vol vendor", "vol opname", "wilayah", "vendor")
+        ):
             return r, row_norm
     return None, {}
+
+
+def _extract_sheet_header_meta(ws, hdr_row: int) -> tuple[str, str]:
+    """Read optional sheet-level Wilayah (W1/W2) and Vendor from header box rows above hdr_row."""
+    sheet_wil = ""
+    sheet_vend = ""
+    for r in range(1, hdr_row):
+        for c in range(1, min(ws.max_column, 12) + 1):
+            raw = str(ws.cell(r, c).value or "").strip().lower()
+            if not raw:
+                continue
+            if raw.startswith("wilayah"):
+                for nc in range(c + 1, min(c + 4, ws.max_column + 1)):
+                    v = str(ws.cell(r, nc).value or "").strip().upper()
+                    if v in ("W1", "W2"):
+                        sheet_wil = v
+                        break
+            elif raw.startswith(("vendor", "pelaksana")):
+                for nc in range(c + 1, min(c + 4, ws.max_column + 1)):
+                    v = str(ws.cell(r, nc).value or "").strip()
+                    if v:
+                        sheet_vend = v
+                        break
+    return sheet_wil, sheet_vend
 
 
 def _col_by_aliases(hmap: dict[str, int], *aliases: str) -> Optional[int]:
@@ -311,12 +337,17 @@ def parse_standard_opname_xlsx(
         c_ov = _col_by_aliases(hmap, "Vol. Opname", "Volume Opname")
         c_stat = _col_by_aliases(hmap, "Status Material")
         c_ket = _col_by_aliases(hmap, "Keterangan")
+        sheet_wil, sheet_vend = _extract_sheet_header_meta(ws_v, hdr_row)
 
         last_row_date: Optional[date] = None
+        last_row_minggu: str = ""
+        last_row_lokasi: str = ""
+        last_row_jalur_lajur: str = ""
+        last_row_kode_tem: str = ""
 
         for r in range(hdr_row + 1, ws_v.max_row + 1):
             lead_txt = " ".join(str(ws_v.cell(r, c).value or "") for c in range(1, 6)).upper()
-            if any(stop in lead_txt for stop in ("TOTAL PEMERIKSAAN", "REALISASI", "DIBUAT OLEH")):
+            if any(stop in lead_txt for stop in ("TOTAL PEMERIKSAAN", "REKAP VOLUME PER ITEM", "REALISASI", "DIBUAT OLEH")):
                 break
 
             raw_kw = ws_v.cell(r, c_kw).value if c_kw else None
@@ -360,19 +391,33 @@ def parse_standard_opname_xlsx(
                 errors.append(f"[{sname} Baris {r}] Tanggal wajib diisi.")
                 continue
 
-            lokasi = _format_lokasi(
+            raw_lokasi = _format_lokasi(
                 ws_v.cell(r, c_sta).value if c_sta else None,
                 ws_v.cell(r, c_sta1).value if c_sta1 else None,
                 ws_v.cell(r, c_sta2).value if c_sta2 else None,
             )
-            jalur_parts = [
+            raw_jalur_parts = [
                 str(ws_v.cell(r, col).value or "").strip()
                 for col in (c_jal, c_laj1, c_laj2)
                 if col
             ]
-            jalur_lajur = " ".join(p for p in jalur_parts if p) or "-"
+            raw_jalur = " ".join(p for p in raw_jalur_parts if p)
+            raw_kode_tem = str(ws_v.cell(r, c_kode_tem).value or "").strip() if c_kode_tem else ""
 
-            raw_wil = str(ws_v.cell(r, c_wil).value or preset_wil or "").strip().upper()
+            if raw_lokasi:
+                lokasi = raw_lokasi
+                last_row_lokasi = lokasi
+                jalur_lajur = raw_jalur or "-"
+                last_row_jalur_lajur = jalur_lajur
+                kode_temuan = raw_kode_tem or "-"
+                last_row_kode_tem = kode_temuan
+            else:
+                # Ditto continuation row for multiple RAB items at the same location
+                lokasi = last_row_lokasi
+                jalur_lajur = raw_jalur or last_row_jalur_lajur or "-"
+                kode_temuan = raw_kode_tem or last_row_kode_tem or "-"
+
+            raw_wil = str((ws_v.cell(r, c_wil).value if c_wil else "") or sheet_wil or preset_wil or "").strip().upper()
             wilayah = raw_wil if raw_wil in ("W1", "W2") else ""
             if lokasi:
                 loc_hint = f"{lokasi} {wilayah}".strip() if wilayah else lokasi
@@ -385,7 +430,7 @@ def parse_standard_opname_xlsx(
                 errors.append(f"[{sname} Baris {r}] Lokasi STA/KM atau Wilayah wajib diisi.")
                 continue
 
-            raw_vend = str(ws_v.cell(r, c_vend).value or preset_vend or "").strip()
+            raw_vend = str((ws_v.cell(r, c_vend).value if c_vend else "") or sheet_vend or preset_vend or "").strip()
             v_ok, canon_vend, v_err = normalize_vendor(raw_vend, row_aset)
             if not v_ok or not canon_vend:
                 errors.append(f"[{sname} Baris {r}] {v_err}")
@@ -413,7 +458,14 @@ def parse_standard_opname_xlsx(
                 warnings_seen.add(r_warn)
                 roster_warnings.append(r_warn)
 
-            minggu = _normalize_minggu(ws_v.cell(r, c_minggu).value if c_minggu else "", sname)
+            raw_minggu_val = ws_v.cell(r, c_minggu).value if c_minggu else None
+            if raw_minggu_val is not None and str(raw_minggu_val).strip():
+                minggu = _normalize_minggu(raw_minggu_val, sname)
+                last_row_minggu = minggu
+            elif last_row_minggu:
+                minggu = last_row_minggu
+            else:
+                minggu = _normalize_minggu("", sname)
             cycle_m, cycle_y = resolve_billing_cycle(row_dt)
             cycle_key = f"{cycle_y:04d}-{cycle_m:02d}"
             _, slot_table, _ = ASSET_TO_TABLE[row_aset]
@@ -432,7 +484,6 @@ def parse_standard_opname_xlsx(
                     table_name=slot_table,
                 )
 
-            kode_temuan = str(ws_v.cell(r, c_kode_tem).value or "").strip() if c_kode_tem else ""
             mat_status = str(ws_v.cell(r, c_stat).value or "").strip() if c_stat else ""
             ket = str(ws_v.cell(r, c_ket).value or "").strip() if c_ket else ""
 
@@ -524,15 +575,18 @@ def build_prefilled_standard_xlsx(
     sub_fill = PatternFill("solid", fgColor="5B9BD5")
 
     cols = [
-        ("No.", 4.2), ("Tanggal", 11.0), ("Minggu", 7.2), ("Kode Temuan", 13.0),
-        ("Wilayah", 6.8), ("Vendor", 8.0), ("STA / KM", 12.0), ("Jalur", 5.5),
-        ("Lajur", 5.5), ("KODE", 8.5), ("Item / Keyword RAB", 22.0),
-        ("P", 6.0), ("L", 6.0), ("T", 6.0), ("Jml", 6.5),
-        ("Vol. Vendor", 10.5), ("Vol. Opname", 10.5), ("Satuan", 13.0),
+        ("No.", 4.2), ("Tanggal", 11.2), ("Minggu", 7.2), ("Kode Temuan", 13.5),
+        ("STA / KM", 12.0), ("Jalur", 5.5), ("Lajur", 5.5), ("KODE", 8.5),
+        ("Item / Keyword RAB", 24.0), ("P", 6.0), ("L", 6.0), ("T", 6.0),
+        ("Jml", 6.5), ("Vol. Vendor", 10.5), ("Vol. Opname", 10.5), ("Satuan", 13.5),
         ("Baik", 5.5), ("Tdk Baik", 6.8), ("Keterangan", 22.0),
     ]
     last_col_idx = 1 + len(cols)
     last_col_l = get_column_letter(last_col_idx)
+
+    first_ent = entries[0] if entries else {}
+    hdr_wil = str(first_ent.get("wilayah") or "").strip().upper()
+    hdr_vend = str(first_ent.get("vendor") or "").strip()
 
     ws.merge_cells(start_row=1, start_column=2, end_row=1, end_column=last_col_idx)
     ws.merge_cells(start_row=2, start_column=2, end_row=2, end_column=last_col_idx)
@@ -542,6 +596,11 @@ def build_prefilled_standard_xlsx(
     ws.cell(3, 2, f"PERIODE BULAN {mon_full} {cycle_year} (SIKLUS 26 - 25)").font = Font(name="Calibri", size=10, bold=True)
     for r_k in (1, 2, 3):
         ws.cell(r_k, 2).alignment = Alignment(horizontal="center", vertical="center")
+
+    ws.cell(7, 2, "Wilayah:").font = Font(name="Calibri", size=9.5, bold=True)
+    ws.cell(7, 4, hdr_wil).font = Font(name="Calibri", size=9.5, bold=True)
+    ws.cell(7, 5, "Vendor:").font = Font(name="Calibri", size=9.5, bold=True)
+    ws.cell(7, 6, hdr_vend).font = Font(name="Calibri", size=9.5, bold=True)
 
     for i, (lbl, width) in enumerate(cols):
         col_i = 2 + i
@@ -560,17 +619,17 @@ def build_prefilled_standard_xlsx(
             cell.border = border
             cell.font = Font(name="Tahoma", size=9)
         ws.cell(r, 2, "=ROW()-10")
-        ws.cell(r, 11, f'=IF(L{r}="","",IFERROR(INDEX(DAFTAR_BOQ!$B:$B,MATCH(L{r},DAFTAR_BOQ!$A:$A,0)),""))')
-        ws.cell(r, 19, f'=IF(L{r}="","",IFERROR(INDEX(DAFTAR_BOQ!$D:$D,MATCH(L{r},DAFTAR_BOQ!$A:$A,0)),""))')
+        ws.cell(r, 9, f'=IF(J{r}="","",IFERROR(INDEX(DAFTAR_BOQ!$B:$B,MATCH(J{r},DAFTAR_BOQ!$A:$A,0)),""))')
+        ws.cell(r, 17, f'=IF(J{r}="","",IFERROR(INDEX(DAFTAR_BOQ!$D:$D,MATCH(J{r},DAFTAR_BOQ!$A:$A,0)),""))')
         ws.cell(
             r,
-            17,
-            f'=IF(L{r}="","",IF(AND(COUNT(M{r})>0,OR(S{r}="m\'",S{r}="m")),ROUND(M{r}*IF(P{r}="",1,P{r}),3),'
-            f'IF(AND(COUNT(M{r}:N{r})=2,S{r}="m2"),ROUND(M{r}*N{r}*IF(P{r}="",1,P{r}),3),'
-            f'IF(AND(COUNT(M{r}:O{r})=3,S{r}="m3"),ROUND(M{r}*N{r}*O{r}*IF(P{r}="",1,P{r}),3),'
-            f'IF(COUNT(P{r})>0,P{r},"")))))',
+            15,
+            f'=IF(J{r}="","",IF(AND(COUNT(K{r})>0,OR(Q{r}="m\'",Q{r}="m")),ROUND(K{r}*IF(N{r}="",1,N{r}),3),'
+            f'IF(AND(COUNT(K{r}:L{r})=2,Q{r}="m2"),ROUND(K{r}*L{r}*IF(N{r}="",1,N{r}),3),'
+            f'IF(AND(COUNT(K{r}:M{r})=3,Q{r}="m3"),ROUND(K{r}*L{r}*M{r}*IF(N{r}="",1,N{r}),3),'
+            f'IF(COUNT(N{r})>0,N{r},"")))))',
         )
-        ws.cell(r, 18, f'=IF(Q{r}="","",Q{r})')
+        ws.cell(r, 16, f'=IF(O{r}="","",O{r})')
 
     for idx_e, ent in enumerate(entries, start=11):
         dt_val = ent.get("tanggal")
@@ -583,27 +642,25 @@ def build_prefilled_standard_xlsx(
         ws.cell(idx_e, 3).number_format = "dd mmm yyyy"
         ws.cell(idx_e, 4, ent.get("minggu") or "M1")
         ws.cell(idx_e, 5, ent.get("kode_temuan") or "-")
-        ws.cell(idx_e, 6, ent.get("wilayah") or "")
-        ws.cell(idx_e, 7, ent.get("vendor") or "")
-        ws.cell(idx_e, 8, ent.get("lokasi") or "")
+        ws.cell(idx_e, 6, ent.get("lokasi") or "")
         jal_parts = str(ent.get("jalur_lajur") or "").split(None, 1)
-        ws.cell(idx_e, 9, jal_parts[0] if jal_parts else "")
-        ws.cell(idx_e, 10, jal_parts[1] if len(jal_parts) > 1 else "")
-        ws.cell(idx_e, 12, ent.get("keyword") or ent.get("item_key") or "")
+        ws.cell(idx_e, 7, jal_parts[0] if jal_parts else "")
+        ws.cell(idx_e, 8, jal_parts[1] if len(jal_parts) > 1 else "")
+        ws.cell(idx_e, 10, ent.get("keyword") or ent.get("item_key") or "")
         if ent.get("p") is not None:
-            ws.cell(idx_e, 13, ent["p"])
+            ws.cell(idx_e, 11, ent["p"])
         if ent.get("l") is not None:
-            ws.cell(idx_e, 14, ent["l"])
+            ws.cell(idx_e, 12, ent["l"])
         if ent.get("t") is not None:
-            ws.cell(idx_e, 15, ent["t"])
+            ws.cell(idx_e, 13, ent["t"])
         if ent.get("jml") is not None:
-            ws.cell(idx_e, 16, ent["jml"])
+            ws.cell(idx_e, 14, ent["jml"])
         if ent.get("vol_vendor") is not None:
-            ws.cell(idx_e, 17, ent["vol_vendor"])
+            ws.cell(idx_e, 15, ent["vol_vendor"])
         if ent.get("volume") is not None:
-            ws.cell(idx_e, 18, ent["volume"])
-        ws.cell(idx_e, 20, 1)
-        ws.cell(idx_e, 22, ent.get("keterangan") or "")
+            ws.cell(idx_e, 16, ent["volume"])
+        ws.cell(idx_e, 18, 1)
+        ws.cell(idx_e, 20, ent.get("keterangan") or "")
 
     tname = f"TBL_{mon_abbr}"
     tbl = Table(displayName=tname, ref=f"B10:{last_col_l}{end_row}")
@@ -642,6 +699,8 @@ def build_prefilled_standard_xlsx(
     for v_i, v in enumerate(vendors, start=2):
         ws_boq.cell(v_i, 5, v)
     ws_boq.cell(1, 7, canon_aset)
+    ws_boq.cell(2, 7, hdr_wil)
+    ws_boq.cell(3, 7, hdr_vend)
     ws_boq.column_dimensions["G"].hidden = True
 
     boq_end = 4 if canon_aset == "RM" else 1 + len(boq_items)
@@ -651,7 +710,7 @@ def build_prefilled_standard_xlsx(
         allow_blank=True,
     )
     ws.add_data_validation(dv_item)
-    dv_item.add("L11:L500")
+    dv_item.add("J11:J500")
 
     ws.page_setup.orientation = ws.ORIENTATION_LANDSCAPE
     ws.page_setup.paperSize = ws.PAPERSIZE_A4
