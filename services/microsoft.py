@@ -205,14 +205,32 @@ def upload_file_to_onedrive(
     return item_id, web_url
 
 
-def download_file_from_onedrive(item_id: str) -> bytes:
-    """Download file bytes from OneDrive by drive item ID."""
+def download_file_from_onedrive(item_id: str, drive_id: str = "") -> bytes:
+    """Download file bytes from OneDrive by drive item ID (supports shared drives when `drive_id` is passed)."""
     token = get_ms_token()
     session = get_retry_session()
-    url = f"https://graph.microsoft.com/v1.0/me/drive/items/{item_id}/content"
+    if drive_id:
+        url = f"https://graph.microsoft.com/v1.0/drives/{drive_id}/items/{item_id}/content"
+    else:
+        url = f"https://graph.microsoft.com/v1.0/me/drive/items/{item_id}/content"
     resp = session.get(url, headers={"Authorization": f"Bearer {token}"}, timeout=60)
     resp.raise_for_status()
     return resp.content
+
+
+def download_share_file_from_onedrive(share_url: str) -> tuple[bytes, str]:
+    """Download file bytes and filename resolved from a OneDrive share link."""
+    token = get_ms_token()
+    session = get_retry_session()
+    headers = {"Authorization": f"Bearer {token}"}
+    drive_id, item_id, _, _ = _resolve_share_drive_item_full(session, headers, share_url)
+    meta_resp = session.get(
+        f"https://graph.microsoft.com/v1.0/drives/{drive_id}/items/{item_id}",
+        headers=headers,
+        timeout=20,
+    )
+    filename = meta_resp.json().get("name", "template.xlsx") if meta_resp.ok else "template.xlsx"
+    return download_file_from_onedrive(item_id, drive_id=drive_id), filename
 
 
 def upload_photo_to_onedrive(file_bytes: bytes, filename: str, folder_path: str = "Dokumentasi SLA") -> str:

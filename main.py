@@ -43,15 +43,18 @@ from services.opname_xlsx import (
 )
 from services.whatsapp import send_whatsapp_document, send_whatsapp_message
 from services.microsoft import (
+    OPNAME_MONTH_NAMES,
     append_opname_rows,
     delete_opname_rows_by_id,
     download_file_from_onedrive,
+    download_share_file_from_onedrive,
     ensure_monthly_opname_workbook,
     replace_opname_slot_rows,
     update_excel_row,
     upload_file_to_onedrive,
     upload_photo_to_onedrive,
 )
+from services.tagihan_generator import generate_tagihan_workbook, parse_tagihan_cycle
 
 import logging
 from logging.handlers import RotatingFileHandler
@@ -1166,6 +1169,165 @@ def handle_rekap_opname_command(reply_chat_id: str, text_lower: str, session: st
     send_whatsapp_message(reply_chat_id, "\n".join(lines), session)
 
 
+def _record_tagihan_archive(slot_id: str, cycle_key: str, source_type: str, arc_info: dict, sheet_count: int) -> None:
+    conn = sqlite3.connect(settings.DB_URL)
+    conn.execute(
+        """
+        INSERT INTO opname_archives (
+            slot_id, cycle_key, aset, wilayah, vendor, minggu, source_type, file_path, item_id, web_url, row_count, created_at
+        ) VALUES (?, ?, 'TAGIHAN', 'W1-W2', 'ALL', 'MC', ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            slot_id,
+            cycle_key,
+            source_type,
+            arc_info.get("filename", ""),
+            arc_info.get("item_id", ""),
+            arc_info.get("web_url", ""),
+            sheet_count,
+            datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        ),
+    )
+    conn.commit()
+    conn.close()
+
+
+def handle_tagihan_command(reply_chat_id: str, body_text: str, message: dict, session: str) -> None:
+    if not settings.OPNAME_ENABLED:
+        send_whatsapp_message(reply_chat_id, "⚠️ Fitur opname/tagihan sedang dinonaktifkan.", session)
+        return
+    if not settings.OPNAME_EXCEL_SHARE_LINK:
+        send_whatsapp_message(reply_chat_id, "❌ `OPNAME_EXCEL_SHARE_LINK` belum dikonfigurasi di server bot.", session)
+        return
+
+    xlsx_mime = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+    media_filename, media_mimetype = extract_media_metadata(message)
+    has_xlsx_attachment = bool(
+        message.get("hasMedia")
+        and (media_filename.lower().endswith(".xlsx") or "spreadsheetml" in media_mimetype)
+    )
+
+    tmpl_bytes = b""
+    tmpl_filename = ""
+    if has_xlsx_attachment:
+        try:
+            tmpl_bytes = _extract_image_bytes_from_message(message)
+            tmpl_filename = media_filename or "MC_TEMPLATE.xlsx"
+        except Exception as dl_err:
+            send_whatsapp_message(reply_chat_id, f"❌ Gagal mengunduh file template MC: {dl_err}", session)
+            return
+
+    cycle_m, cycle_y = parse_tagihan_cycle(body_text, template_filename=tmpl_filename)
+    cycle_key = f"{cycle_y:04d}-{cycle_m:02d}"
+    month_label = OPNAME_MONTH_NAMES.get(cycle_m, f"{cycle_m:02d}")
+
+    if has_xlsx_attachment:
+        try:
+            tmpl_arc = _archive_opname_file_to_onedrive(cycle_key, "Tagihan", tmpl_filename, tmpl_bytes, xlsx_mime)
+            _record_tagihan_archive(f"TAGIHAN-TMPL-{cycle_key}", cycle_key, "TAGIHAN_TEMPLATE", tmpl_arc, 0)
+        except Exception as cache_err:
+            print(f"Warning: Gagal arsip template Tagihan ke OneDrive: {cache_err}")
+    else:
+        conn = sqlite3.connect(settings.DB_URL)
+        row = conn.execute(
+            """
+            SELECT file_path, COALESCE(item_id, '')
+            FROM opname_archives
+            WHERE source_type = 'TAGIHAN_TEMPLATE' AND item_id != ''
+            ORDER BY (CASE WHEN cycle_key = ? THEN 0 ELSE 1 END), archive_id DESC
+            LIMIT 1
+            """,
+            (cycle_key,),
+        ).fetchone()
+        conn.close()
+
+        if row and row[1]:
+            try:
+                tmpl_bytes = download_file_from_onedrive(row[1])
+                tmpl_filename = row[0] or f"MC-{cycle_m:02d}.xlsx"
+            except Exception as dl_err:
+                print(f"Warning: Gagal unduh template MC cached {row[1]}: {dl_err}")
+                tmpl_bytes = b""
+
+        if not tmpl_bytes and settings.TAGIHAN_TEMPLATE_SHARE_LINK:
+            try:
+                tmpl_bytes, tmpl_filename = download_share_file_from_onedrive(settings.TAGIHAN_TEMPLATE_SHARE_LINK)
+            except Exception as share_err:
+                send_whatsapp_message(reply_chat_id, f"❌ Gagal mengunduh `TAGIHAN_TEMPLATE_SHARE_LINK`: {share_err}", session)
+                return
+
+        if not tmpl_bytes:
+            send_whatsapp_message(
+                reply_chat_id,
+                "⚠️ Template `MC` belum tersedia.\n"
+                "Kirim file template `MC-<XX> MENCARI VOLUME.xlsx` dengan caption `/tagihan` "
+                "(atau `/tagihan 2026-11`), setelah itu perintah `/tagihan` berikutnya akan otomatis memakai template tersebut.",
+                session,
+            )
+            return
+
+    # Download DATA_UNTUK_VOL_<BULAN>_<TAHUN>.xlsx from OneDrive
+    try:
+        if settings.OPNAME_AUTO_MONTHLY:
+            try:
+                target_di, drv_id, itm_id = _resolve_cycle_target_di(cycle_m, cycle_y)
+                vista_bytes = download_file_from_onedrive(itm_id, drive_id=drv_id)
+            except Exception:
+                conn_wb = sqlite3.connect(settings.DB_URL)
+                conn_wb.execute("DELETE FROM opname_workbooks WHERE cycle_key = ?", (cycle_key,))
+                conn_wb.commit()
+                conn_wb.close()
+                target_di, drv_id, itm_id = _resolve_cycle_target_di(cycle_m, cycle_y)
+                vista_bytes = download_file_from_onedrive(itm_id, drive_id=drv_id)
+        else:
+            vista_bytes, _ = download_share_file_from_onedrive(settings.OPNAME_EXCEL_SHARE_LINK)
+    except Exception as silo_err:
+        send_whatsapp_message(
+            reply_chat_id,
+            f"❌ Gagal mengambil `DATA_UNTUK_VOL_{month_label}_{cycle_y}.xlsx` dari OneDrive: {silo_err}",
+            session,
+        )
+        return
+
+    try:
+        res = generate_tagihan_workbook(vista_bytes, tmpl_bytes, cycle_m, cycle_y)
+    except Exception as gen_err:
+        send_whatsapp_message(reply_chat_id, f"❌ Gagal membuat file Tagihan MC ({cycle_key}): {gen_err}", session)
+        return
+
+    out_bytes = res["output_bytes"]
+    out_filename = res["output_filename"]
+    try:
+        out_arc = _archive_opname_file_to_onedrive(cycle_key, "Tagihan", out_filename, out_bytes, xlsx_mime)
+        _record_tagihan_archive(f"TAGIHAN-{cycle_key}", cycle_key, "TAGIHAN_OUTPUT", out_arc, len(res["ordered_sheets"]))
+    except Exception as arch_err:
+        send_whatsapp_message(reply_chat_id, f"❌ Gagal mengunggah hasil Tagihan ke OneDrive: {arch_err}", session)
+        return
+
+    gt_lines = "\n".join(
+        f"• {s}: Rp {res['grand_totals'][s]:,.2f}"
+        for s in res["ordered_sheets"]
+        if res["grand_totals"].get(s, 0.0) > 0
+    ) or "• Belum ada volume opname > 0 pada siklus ini."
+    warn_block = ""
+    if res["warnings"]:
+        warn_block = "\n\n⚠️ *Catatan:*\n" + "\n".join(f"- {w}" for w in res["warnings"][:5])
+    caption = (
+        f"📑 *Tagihan MC Selesai (`{month_label} {cycle_y}`)*\n"
+        f"Total Pilar 1 (sheet aktif): *Rp {res['total_grand']:,.2f}*\n\n"
+        f"{gt_lines}{warn_block}\n\n"
+        f"🔗 {out_arc.get('web_url', '')}"
+    )
+    send_whatsapp_document(
+        reply_chat_id,
+        out_bytes,
+        out_filename,
+        caption=caption,
+        mimetype=xlsx_mime,
+        session=session,
+    )
+
+
 def process_opname_xlsx_message(
     file_bytes: bytes,
     filename: str,
@@ -1608,7 +1770,7 @@ def process_message(message: dict):
     )
     if is_group:
         body_clean = body.strip().lower() if isinstance(body, str) else ""
-        is_cmd = body_clean.startswith(("/rekap", "/undo", "/simpan", "/status opname", "/arsip"))
+        is_cmd = body_clean.startswith(("/rekap", "/undo", "/simpan", "/status opname", "/arsip", "/tagihan"))
         has_sla_code = message.get("hasMedia") and extract_kode_from_text(body)
         has_scan_trig = bool(extract_scan_opname_hint(body))
         if not is_cmd and not has_sla_code and not has_scan_trig and not is_xlsx_msg:
@@ -1627,6 +1789,11 @@ def process_message(message: dict):
     # Intercept WhatsApp Commands
     if body and isinstance(body, str):
         text_lower = body.strip().lower()
+        if text_lower.startswith("/tagihan"):
+            if not mark_processed(processing_key):
+                return
+            handle_tagihan_command(reply_chat_id, body, message, session)
+            return
         if text_lower.startswith("/simpan"):
             if not mark_processed(processing_key):
                 return

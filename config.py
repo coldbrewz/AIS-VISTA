@@ -27,6 +27,7 @@ class Settings(BaseSettings):
     
     EXCEL_SHARE_LINK: str = ""
     OPNAME_EXCEL_SHARE_LINK: str = ""
+    TAGIHAN_TEMPLATE_SHARE_LINK: str = ""
     OPNAME_ENABLED: bool = True
     OPNAME_AUTO_MONTHLY: bool = True
     OPNAME_CYCLE_YEAR: int = 2026
