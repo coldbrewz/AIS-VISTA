@@ -10,6 +10,7 @@ KODE_PATTERN = re.compile(
     re.IGNORECASE,
 )
 SCAN_OPNAME_PATTERN = re.compile(r"\b(?:scan\s+opname|opname\s+scan)\b", re.IGNORECASE)
+XLSX_OPNAME_PATTERN = re.compile(r"\bopname\b", re.IGNORECASE)
 
 
 def _clean_string(value) -> str | None:
@@ -221,6 +222,18 @@ def extract_scan_opname_hint(text: str) -> dict | None:
         "wilayah": m_wil.group(1) if m_wil else "",
         "minggu": m_wk.group(1) if m_wk else "",
     }
+
+
+def has_xlsx_opname_trigger(text: str) -> bool:
+    """Return True only when an .xlsx message caption explicitly requests opname ingestion."""
+    if not isinstance(text, str):
+        return False
+    cleaned = text.strip()
+    if not cleaned or cleaned.startswith("/"):
+        return False
+    if SCAN_OPNAME_PATTERN.search(cleaned):
+        return False
+    return bool(XLSX_OPNAME_PATTERN.search(cleaned))
 
 
 def parse_opname_date_str(raw: str) -> str | None:

@@ -235,7 +235,7 @@ class OpnameWorkflowTests(unittest.TestCase):
                     "id": {"_serialized": "false_628111@c.us_XLSX1"},
                     "from": "628111@c.us",
                     "hasMedia": True,
-                    "body": "",
+                    "body": "Opname",
                     "media": {"filename": "PV_W1_MIJ_2026.xlsx", "mimetype": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"},
                     "_session": "default",
                 }
@@ -266,7 +266,7 @@ class OpnameWorkflowTests(unittest.TestCase):
                     "id": {"_serialized": "false_628111@c.us_XLSX2"},
                     "from": "628111@c.us",
                     "hasMedia": True,
-                    "body": "",
+                    "body": "Opname PV",
                     "media": {"filename": "PV_W1_MIJ_2026.xlsx", "mimetype": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"},
                     "_session": "default",
                 }
@@ -336,7 +336,7 @@ class OpnameWorkflowTests(unittest.TestCase):
                     "id": {"_serialized": "false_628111@c.us_MIS1"},
                     "from": "628111@c.us",
                     "hasMedia": True,
-                    "body": "",
+                    "body": "Opname",
                     "media": {"filename": "PV_W2_MIJ.xlsx", "mimetype": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"},
                     "_session": "default",
                 }
@@ -473,7 +473,7 @@ class OpnameWorkflowTests(unittest.TestCase):
                         "id": {"_serialized": f"false_628111@c.us_{msg_id}"},
                         "from": "628111@c.us",
                         "hasMedia": True,
-                        "body": "",
+                        "body": "Upload Opname",
                         "media": {"filename": "PV_W1_MIJ_2026.xlsx", "mimetype": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"},
                         "_session": "default",
                     }
@@ -549,6 +549,40 @@ class OpnameWorkflowTests(unittest.TestCase):
         self.assertEqual(m4_slot.entries[1]["jalur_lajur"], "A L1")
         self.assertEqual(m4_slot.entries[1]["kode_temuan"], "201126PV001")
         self.assertEqual(m5_slot.entries[0]["lokasi"], "KM 45+200")
+
+    def test_xlsx_without_opname_trigger_is_ignored(self):
+        xlsx_bytes = _make_sample_pv_xlsx(
+            {"NOV": [{"tanggal": datetime.date(2026, 11, 20), "minggu": "M4", "lokasi": "KM 45+200", "item": "Permanen", "vol_opname": 0.25}]}
+        )
+        with patch("main._extract_image_bytes_from_message", return_value=xlsx_bytes) as mock_dl, \
+             patch("main.replace_opname_slot_rows") as mock_rep, \
+             patch("main.upload_file_to_onedrive") as mock_up, \
+             patch("main.send_whatsapp_message") as mock_send:
+            # Group .xlsx without caption & direct chat .xlsx with unrelated caption
+            main.process_message(
+                {
+                    "id": {"_serialized": "false_628111@g.us_SKIP1"},
+                    "from": "628111@g.us",
+                    "hasMedia": True,
+                    "body": "",
+                    "media": {"filename": "RAB_Revisi.xlsx", "mimetype": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"},
+                    "_session": "default",
+                }
+            )
+            main.process_message(
+                {
+                    "id": {"_serialized": "false_628111@c.us_SKIP2"},
+                    "from": "628111@c.us",
+                    "hasMedia": True,
+                    "body": "Jadwal minggu depan",
+                    "media": {"filename": "PV_W1_MIJ_2026.xlsx", "mimetype": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"},
+                    "_session": "default",
+                }
+            )
+        mock_dl.assert_not_called()
+        mock_rep.assert_not_called()
+        mock_up.assert_not_called()
+        mock_send.assert_not_called()
 
 
 if __name__ == "__main__":

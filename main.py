@@ -19,6 +19,7 @@ from services.message_utils import (
     extract_media_metadata,
     extract_message_id,
     extract_scan_opname_hint,
+    has_xlsx_opname_trigger,
     parse_opname_date_str,
     reconcile_date_with_message_time,
     resolve_billing_cycle,
@@ -1607,14 +1608,14 @@ def process_opname_scan_message(
         f"Aset / Minggu: *{aset}* / *{first_slot['minggu']}* | Vendor: *{first_slot['vendor']}*\n"
         + "\n".join(preview_lines[:20])
         + warn_block
-        + f"\n\n✅ Ketik `/simpan {scan_id}` jika angka sudah benar, atau edit file Excel di bawah lalu kirim balik ke chat ini."
+        + f"\n\n✅ Ketik `/simpan {scan_id}` jika angka sudah benar, atau edit file Excel di bawah lalu kirim balik dengan caption `Opname`."
     )
     send_whatsapp_message(reply_chat_id, preview_msg, session)
     send_whatsapp_document(
         reply_chat_id,
         xlsx_bytes,
         xlsx_name,
-        caption=f"Excel hasil OCR `{scan_id}`. Edit jika ada koreksi, atau balas `/simpan {scan_id}`.",
+        caption=f"Excel hasil OCR `{scan_id}`. Edit jika ada koreksi lalu kirim balik dengan caption `Opname`, atau balas `/simpan {scan_id}`.",
         session=session,
     )
 
@@ -1761,19 +1762,20 @@ def process_message(message: dict):
     is_group = "@g.us" in sender_chat_id
     body = message.get("body", "")
     media_filename, media_mimetype = extract_media_metadata(message)
-    is_xlsx_msg = bool(
+    is_xlsx_file = bool(
         message.get("hasMedia")
         and (
             media_filename.lower().endswith(".xlsx")
             or "spreadsheetml" in media_mimetype
         )
     )
+    is_xlsx_opname = is_xlsx_file and has_xlsx_opname_trigger(body)
     if is_group:
         body_clean = body.strip().lower() if isinstance(body, str) else ""
         is_cmd = body_clean.startswith(("/rekap", "/undo", "/simpan", "/status opname", "/arsip", "/tagihan"))
         has_sla_code = message.get("hasMedia") and extract_kode_from_text(body)
         has_scan_trig = bool(extract_scan_opname_hint(body))
-        if not is_cmd and not has_sla_code and not has_scan_trig and not is_xlsx_msg:
+        if not is_cmd and not has_sla_code and not has_scan_trig and not is_xlsx_opname:
             return  # Silently drop irrelevant group messages
     
     print(f"\n--- New WAHA Message Received ---")
@@ -1846,8 +1848,8 @@ def process_message(message: dict):
         )
         return
 
-    # Route Standard .xlsx Opname Workbook Drop-In
-    if is_xlsx_msg:
+    # Route Standard .xlsx Opname Workbook Drop-In (only when caption explicitly contains `Opname`)
+    if is_xlsx_opname:
         try:
             xlsx_bytes = _extract_image_bytes_from_message(message)
         except Exception as dl_err:
