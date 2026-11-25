@@ -231,7 +231,7 @@ def extract_opname_form_ocr(
         f"You are an expert civil engineering opname OCR reader for Indonesian toll road forms.\n"
         f"Context hint from user: Aset='{aset_hint or 'auto'}', Caption='{caption or '-'}'.\n\n"
         f"Instructions:\n"
-        f"1. Read header fields if visible: aset (PV/GR/SG/WR/RM/LC/CA/DR/FE), vendor, wilayah (W1/W2), minggu (M1/M2/M3/M4).\n"
+        f"1. Read header fields if visible: aset (PV/GR/SG/WR/RM/LC/CA/DR/FE), vendor, wilayah (W1/W2), minggu (M1/M2/M3/M4/M5).\n"
         f"2. Read every non-empty row from the opname table. IGNORE completely empty blank rows.\n"
         f"3. CRITICAL: If a number in `Vol. Vendor` is crossed out and replaced by a handwritten number in `Vol. Opname` (or margin note), extract BOTH `vol_vendor` and the handwritten `vol_opname`, and set `handwritten_edited: true`.\n"
         f"4. Map `raw_item` strictly using the closest exact keyword or item_key from the BOQ menu below when available.\n"
