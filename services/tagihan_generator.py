@@ -542,13 +542,22 @@ def _patch_sheet_xml(
     layout: SheetLayout,
     patch: SheetPatch,
     cells: dict[str, tuple[str, str, str]],
-) -> tuple[str, float]:
+    rollover_previous_month: bool = False,
+) -> tuple[str, float, float]:
     if not patch.active:
-        return xml, _eval_existing_cell(cells, layout.grand_total_coord)
+        return (
+            xml,
+            _eval_existing_cell(cells, layout.grand_total_coord),
+            _eval_existing_cell(cells, f"{layout.prev_price_col}{layout.grand_total_row}"),
+        )
 
     annual_total = _eval_existing_cell(cells, f"{layout.annual_total_col}{layout.annual_row}")
+    prev_bobot_col = openpyxl.utils.get_column_letter(
+        openpyxl.utils.column_index_from_string(layout.prev_price_col) + 1
+    )
     ops: dict[str, tuple[object, ...]] = {}
     subtotal = cum_subtotal = bobot_sum = cum_bobot_sum = 0.0
+    prev_subtotal = prev_bobot_sum = 0.0
 
     start_r = 12 if layout.sheet_name.startswith("PML PV") else layout.first_item_row
     for row in range(layout.first_item_row, layout.last_item_row + 1):
@@ -558,9 +567,21 @@ def _patch_sheet_xml(
             f"{layout.unit_price_col}{row}" in cells
             and _parse_number(cells[f"{layout.unit_price_col}{row}"][0]) is not None
         )
-        prev_qty = _eval_existing_cell(cells, f"{layout.prev_qty_col}{row}")
-        in_coord = f"{layout.input_col}{row}"
+        old_prev_qty = _eval_existing_cell(cells, f"{layout.prev_qty_col}{row}")
+        old_in_qty = _eval_existing_cell(cells, f"{layout.input_col}{row}")
 
+        if rollover_previous_month and row >= start_r:
+            prev_dec = Decimal(f"{old_prev_qty:.10f}") + Decimal(f"{old_in_qty:.10f}")
+            prev_qty = float(prev_dec)
+            prev_val = int(prev_dec) if prev_dec == prev_dec.to_integral_value() else prev_qty
+            ops[f"{layout.prev_qty_col}{row}"] = ("patch", prev_val if prev_qty else 0)
+            if layout.sheet_name.startswith("PML PV"):
+                for nop_col in ("N", "O", "P"):
+                    ops[f"{nop_col}{row}"] = ("patch", None)
+        else:
+            prev_qty = old_prev_qty
+
+        in_coord = f"{layout.input_col}{row}"
         if row in patch.owned_rows and in_patch_range:
             in_spec = patch.row_values.get(row)
             q_val = 0.0 if in_spec is None else (_safe_eval_expr(in_spec) or 0.0)
@@ -569,6 +590,14 @@ def _patch_sheet_xml(
             q_val = _eval_existing_cell(cells, in_coord)
 
         if has_price_cell:
+            if rollover_previous_month:
+                p_price = prev_qty * unit_price
+                prev_subtotal += p_price
+                p_bobot = (p_price / annual_total * 100.0) if annual_total > 0 else 0.0
+                prev_bobot_sum += p_bobot
+                ops[f"{layout.prev_price_col}{row}"] = ("cached_v", p_price)
+                ops[f"{prev_bobot_col}{row}"] = ("cached_v", p_bobot)
+
             m_price = q_val * unit_price
             subtotal += m_price
             m_bobot = (m_price / annual_total * 100.0) if annual_total > 0 else 0.0
@@ -592,6 +621,18 @@ def _patch_sheet_xml(
     cum_dpp = cum_subtotal * 11.0 / 12.0
     cum_ppn = cum_dpp * 0.12
     cum_gt = cum_subtotal + cum_ppn
+
+    if rollover_previous_month:
+        prev_dpp = prev_subtotal * 11.0 / 12.0
+        prev_ppn = prev_dpp * 0.12
+        prev_gt = prev_subtotal + prev_ppn
+        ops[f"{layout.prev_price_col}{layout.subtotal_row}"] = ("cached_v", prev_subtotal)
+        ops[f"{layout.prev_price_col}{layout.dpp_row}"] = ("cached_v", prev_dpp)
+        ops[f"{layout.prev_price_col}{layout.ppn_row}"] = ("cached_v", prev_ppn)
+        ops[f"{layout.prev_price_col}{layout.grand_total_row}"] = ("cached_v", prev_gt)
+        ops[f"{prev_bobot_col}{layout.subtotal_row}"] = ("cached_v", prev_bobot_sum)
+    else:
+        prev_gt = _eval_existing_cell(cells, f"{layout.prev_price_col}{layout.grand_total_row}")
 
     ops[f"{layout.price_col}{layout.subtotal_row}"] = ("cached_v", subtotal)
     ops[f"{layout.price_col}{layout.dpp_row}"] = ("cached_v", dpp)
@@ -639,7 +680,7 @@ def _patch_sheet_xml(
             continue
         new_xml = _insert_missing_cell_in_row(new_xml, coord, f'<c r="{coord}"><v>{_fmt_xml_num(spec)}</v></c>')
 
-    return new_xml, grand_total
+    return new_xml, grand_total, prev_gt
 
 
 def _update_formula_cached_v(xml: str, coord: str, cached_num: float) -> str:
@@ -660,6 +701,7 @@ def _update_rekap_sheets(
     rekap_inc_xml: str | None,
     rekap_p1_xml: str | None,
     patched_grand_totals: dict[str, float],
+    prev_grand_totals: dict[str, float] | None = None,
 ) -> tuple[str | None, str | None]:
     inc_x_vals: dict[int, float] = {}
     sheet_ref_re = re.compile(r"^'([^']+)'!([A-Z]+\d+)$")
@@ -681,8 +723,22 @@ def _update_rekap_sheets(
         return rekap_inc_xml, None
 
     p1_cells = _index_sheet_cells(rekap_p1_xml, [], 8, 30)
+    v_vals: dict[int, float] = {}
     w_vals: dict[int, float] = {}
+    x_vals: dict[int, float] = {}
     for r in range(8, 29):
+        v_coord = f"V{r}"
+        _vt, vf_txt, _va = p1_cells.get(v_coord, ("", "", ""))
+        m_vref = sheet_ref_re.match(vf_txt.replace("&amp;", "&").strip())
+        v_updated = False
+        if prev_grand_totals and m_vref and m_vref.group(1) in prev_grand_totals:
+            v_val = prev_grand_totals[m_vref.group(1)]
+            rekap_p1_xml = _update_formula_cached_v(rekap_p1_xml, v_coord, v_val)
+            v_updated = True
+        else:
+            v_val = _eval_existing_cell(p1_cells, v_coord)
+        v_vals[r] = v_val
+
         coord = f"W{r}"
         _txt, f_txt, _a = p1_cells.get(coord, ("", "", ""))
         clean_f = f_txt.replace("&amp;", "&").strip()
@@ -705,21 +761,31 @@ def _update_rekap_sheets(
         if not updated:
             w_vals[r] = _eval_existing_cell(p1_cells, coord)
 
-        if updated and 8 <= r <= 21:
-            v_val = _eval_existing_cell(p1_cells, f"V{r}")
+        if (updated or v_updated) and 8 <= r <= 21:
             f_val = _eval_existing_cell(p1_cells, f"F{r}")
             _xt, xf, _xa = p1_cells.get(f"X{r}", ("", "", ""))
             if "V" in xf and "W" in xf:
                 x_val = v_val + w_vals[r]
                 rekap_p1_xml = _update_formula_cached_v(rekap_p1_xml, f"X{r}", x_val)
+                x_vals[r] = x_val
                 if f_val > 0:
                     y_val = x_val / f_val
                     rekap_p1_xml = _update_formula_cached_v(rekap_p1_xml, f"Y{r}", y_val)
                     rekap_p1_xml = _update_formula_cached_v(rekap_p1_xml, f"Z{r}", 1.0 - y_val)
+            else:
+                x_vals[r] = _eval_existing_cell(p1_cells, f"X{r}")
+        else:
+            x_vals[r] = _eval_existing_cell(p1_cells, f"X{r}")
 
+    _v29t, v29_f, _v29a = p1_cells.get("V29", ("", "", ""))
+    if "SUM(V8:V28)" in v29_f.upper():
+        rekap_p1_xml = _update_formula_cached_v(rekap_p1_xml, "V29", sum(v_vals.get(r, 0.0) for r in range(8, 29)))
     _w29t, w29_f, _w29a = p1_cells.get("W29", ("", "", ""))
     if "SUM(W8:W28)" in w29_f.upper():
         rekap_p1_xml = _update_formula_cached_v(rekap_p1_xml, "W29", sum(w_vals.get(r, 0.0) for r in range(8, 29)))
+    _x29t, x29_f, _x29a = p1_cells.get("X29", ("", "", ""))
+    if "SUM(X8:X28)" in x29_f.upper():
+        rekap_p1_xml = _update_formula_cached_v(rekap_p1_xml, "X29", sum(x_vals.get(r, 0.0) for r in range(8, 29)))
 
     return rekap_inc_xml, rekap_p1_xml
 
@@ -729,10 +795,13 @@ def generate_tagihan_workbook(
     template_bytes: bytes,
     cycle_month: int,
     cycle_year: int,
+    rollover_previous_month: bool = False,
 ) -> dict:
     """
     Aggregate all 7 `LOG_*` sheets from `DATA_UNTUK_VOL` bytes and surgically patch
     the 14 `PML *` sheets + `REKAP` tabs of `template_bytes` into output `.xlsx` bytes.
+    When `rollover_previous_month=True`, `S.D. BULAN INI` (`prev_qty + input_qty`) from
+    `template_bytes` is rolled into `S.D. BULAN LALU` (`prev_qty`) before writing `Bulan Ini`.
     """
     wb_val = openpyxl.load_workbook(io.BytesIO(vista_bytes), data_only=True)
     wb_fml = openpyxl.load_workbook(io.BytesIO(vista_bytes), data_only=False)
@@ -740,6 +809,7 @@ def generate_tagihan_workbook(
     patches: dict[str, SheetPatch] = {}
     warnings: list[str] = []
     grand_totals: dict[str, float] = {}
+    prev_grand_totals: dict[str, float] = {}
     patched_xml_by_internal_path: dict[str, bytes] = {}
     out_buf = io.BytesIO()
 
@@ -821,15 +891,27 @@ def generate_tagihan_workbook(
 
             for t_sheet, patch in patches.items():
                 raw_xml, cells, layout, _ = _load_sheet(t_sheet)
-                new_xml, gt = _patch_sheet_xml(raw_xml, layout, patch, cells)
+                new_xml, gt, prev_gt = _patch_sheet_xml(
+                    raw_xml,
+                    layout,
+                    patch,
+                    cells,
+                    rollover_previous_month=rollover_previous_month,
+                )
                 patched_xml_by_internal_path[sheet_paths[t_sheet]] = new_xml.encode("utf-8")
                 grand_totals[t_sheet] = gt
+                prev_grand_totals[t_sheet] = prev_gt
 
             rekap_p1_path = sheet_paths.get("REKAP PILAR 1 PEMEL")
             rekap_inc_path = sheet_paths.get("REKAP INC PPN")
             rekap_p1_raw = zin.read(rekap_p1_path).decode("utf-8") if rekap_p1_path else None
             rekap_inc_raw = zin.read(rekap_inc_path).decode("utf-8") if rekap_inc_path else None
-            rekap_inc_new, rekap_p1_new = _update_rekap_sheets(rekap_inc_raw, rekap_p1_raw, grand_totals)
+            rekap_inc_new, rekap_p1_new = _update_rekap_sheets(
+                rekap_inc_raw,
+                rekap_p1_raw,
+                grand_totals,
+                prev_grand_totals=prev_grand_totals if rollover_previous_month else None,
+            )
             if rekap_p1_path and rekap_p1_new is not None:
                 patched_xml_by_internal_path[rekap_p1_path] = rekap_p1_new.encode("utf-8")
             if rekap_inc_path and rekap_inc_new is not None:
@@ -869,6 +951,8 @@ def generate_tagihan_workbook(
         "output_filename": f"MC-{cycle_month:02d}_TAGIHAN_{month_label}_{cycle_year}.xlsx",
         "ordered_sheets": ordered_sheets,
         "grand_totals": grand_totals,
+        "prev_grand_totals": prev_grand_totals,
         "total_grand": sum(grand_totals.values()),
+        "rollover_applied": rollover_previous_month,
         "warnings": warnings,
     }

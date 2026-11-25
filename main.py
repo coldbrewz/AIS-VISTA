@@ -1207,6 +1207,7 @@ def handle_tagihan_command(reply_chat_id: str, body_text: str, message: dict, se
         message.get("hasMedia")
         and (media_filename.lower().endswith(".xlsx") or "spreadsheetml" in media_mimetype)
     )
+    is_base_cmd = bool(re.match(r"^/tagihan\s+base\b", body_text.strip(), re.IGNORECASE))
 
     tmpl_bytes = b""
     tmpl_filename = ""
@@ -1218,54 +1219,138 @@ def handle_tagihan_command(reply_chat_id: str, body_text: str, message: dict, se
             send_whatsapp_message(reply_chat_id, f"❌ Gagal mengunduh file template MC: {dl_err}", session)
             return
 
-    cycle_m, cycle_y = parse_tagihan_cycle(body_text, template_filename=tmpl_filename)
-    cycle_key = f"{cycle_y:04d}-{cycle_m:02d}"
-    month_label = OPNAME_MONTH_NAMES.get(cycle_m, f"{cycle_m:02d}")
-
-    if has_xlsx_attachment:
-        try:
-            tmpl_arc = _archive_opname_file_to_onedrive(cycle_key, "Tagihan", tmpl_filename, tmpl_bytes, xlsx_mime)
-            _record_tagihan_archive(f"TAGIHAN-TMPL-{cycle_key}", cycle_key, "TAGIHAN_TEMPLATE", tmpl_arc, 0)
-        except Exception as cache_err:
-            print(f"Warning: Gagal arsip template Tagihan ke OneDrive: {cache_err}")
-    else:
-        conn = sqlite3.connect(settings.DB_URL)
-        row = conn.execute(
-            """
-            SELECT file_path, COALESCE(item_id, '')
-            FROM opname_archives
-            WHERE source_type = 'TAGIHAN_TEMPLATE' AND item_id != ''
-            ORDER BY (CASE WHEN cycle_key = ? THEN 0 ELSE 1 END), archive_id DESC
-            LIMIT 1
-            """,
-            (cycle_key,),
-        ).fetchone()
-        conn.close()
-
-        if row and row[1]:
-            try:
-                tmpl_bytes = download_file_from_onedrive(row[1])
-                tmpl_filename = row[0] or f"MC-{cycle_m:02d}.xlsx"
-            except Exception as dl_err:
-                print(f"Warning: Gagal unduh template MC cached {row[1]}: {dl_err}")
-                tmpl_bytes = b""
-
-        if not tmpl_bytes and settings.TAGIHAN_TEMPLATE_SHARE_LINK:
-            try:
-                tmpl_bytes, tmpl_filename = download_share_file_from_onedrive(settings.TAGIHAN_TEMPLATE_SHARE_LINK)
-            except Exception as share_err:
-                send_whatsapp_message(reply_chat_id, f"❌ Gagal mengunduh `TAGIHAN_TEMPLATE_SHARE_LINK`: {share_err}", session)
-                return
-
-        if not tmpl_bytes:
+    if is_base_cmd:
+        if not has_xlsx_attachment:
             send_whatsapp_message(
                 reply_chat_id,
-                "⚠️ Template `MC` belum tersedia.\n"
-                "Kirim file template `MC-<XX> MENCARI VOLUME.xlsx` dengan caption `/tagihan` "
-                "(atau `/tagihan 2026-11`), setelah itu perintah `/tagihan` berikutnya akan otomatis memakai template tersebut.",
+                "⚠️ Lampirkan file `MC` terakhir (misal `MC-9 MENCARI VOLUME.xlsx`) bersama caption `/tagihan base 2026-09`.",
                 session,
             )
             return
+        base_m, base_y = parse_tagihan_cycle(
+            re.sub(r"^/tagihan\s+base\b", "/tagihan", body_text, flags=re.IGNORECASE),
+            template_filename=tmpl_filename,
+        )
+        base_key = f"{base_y:04d}-{base_m:02d}"
+        base_label = OPNAME_MONTH_NAMES.get(base_m, f"{base_m:02d}")
+        next_m, next_y = (1, base_y + 1) if base_m == 12 else (base_m + 1, base_y)
+        try:
+            base_arc = _archive_opname_file_to_onedrive(base_key, "Tagihan", tmpl_filename, tmpl_bytes, xlsx_mime)
+            _record_tagihan_archive(f"TAGIHAN-{base_key}", base_key, "TAGIHAN_OUTPUT", base_arc, 0)
+        except Exception as arch_err:
+            send_whatsapp_message(reply_chat_id, f"❌ Gagal menyimpan baseline Tagihan ke OneDrive: {arch_err}", session)
+            return
+        send_whatsapp_message(
+            reply_chat_id,
+            f"✅ *Baseline Tagihan `{base_label} {base_y}` Tersimpan*\n"
+            f"File: `{base_arc.get('filename', tmpl_filename)}`\n"
+            f"🔗 {base_arc.get('web_url', '')}\n\n"
+            f"Untuk membuat tagihan bulan berikutnya dengan auto-rollover `S.D. BULAN LALU`, ketik:\n"
+            f"`/tagihan {next_y:04d}-{next_m:02d}`",
+            session,
+        )
+        return
+
+    cycle_m, cycle_y = parse_tagihan_cycle(body_text, template_filename=tmpl_filename)
+    cycle_key = f"{cycle_y:04d}-{cycle_m:02d}"
+    month_label = OPNAME_MONTH_NAMES.get(cycle_m, f"{cycle_m:02d}")
+    prev_m, prev_y = (12, cycle_y - 1) if cycle_m == 1 else (cycle_m - 1, cycle_y)
+    prev_cycle_key = f"{prev_y:04d}-{prev_m:02d}"
+    rollover_prev = False
+
+    if has_xlsx_attachment:
+        tmpl_m, tmpl_y = parse_tagihan_cycle("", template_filename=tmpl_filename, default_cycle=(cycle_m, cycle_y))
+        if (tmpl_m, tmpl_y) == (prev_m, prev_y):
+            rollover_prev = True
+            try:
+                base_arc = _archive_opname_file_to_onedrive(prev_cycle_key, "Tagihan", tmpl_filename, tmpl_bytes, xlsx_mime)
+                _record_tagihan_archive(f"TAGIHAN-{prev_cycle_key}", prev_cycle_key, "TAGIHAN_OUTPUT", base_arc, 0)
+            except Exception as cache_err:
+                print(f"Warning: Gagal arsip baseline Tagihan ke OneDrive: {cache_err}")
+        else:
+            try:
+                tmpl_arc = _archive_opname_file_to_onedrive(cycle_key, "Tagihan", tmpl_filename, tmpl_bytes, xlsx_mime)
+                _record_tagihan_archive(f"TAGIHAN-TMPL-{cycle_key}", cycle_key, "TAGIHAN_TEMPLATE", tmpl_arc, 0)
+            except Exception as cache_err:
+                print(f"Warning: Gagal arsip template Tagihan ke OneDrive: {cache_err}")
+    else:
+        conn = sqlite3.connect(settings.DB_URL)
+        prev_out_row = conn.execute(
+            """
+            SELECT file_path, COALESCE(item_id, '')
+            FROM opname_archives
+            WHERE source_type = 'TAGIHAN_OUTPUT' AND cycle_key = ? AND item_id != ''
+            ORDER BY archive_id DESC
+            LIMIT 1
+            """,
+            (prev_cycle_key,),
+        ).fetchone()
+        if prev_out_row and prev_out_row[1]:
+            conn.close()
+            try:
+                tmpl_bytes = download_file_from_onedrive(prev_out_row[1])
+                tmpl_filename = prev_out_row[0] or f"MC-{prev_m:02d}.xlsx"
+                rollover_prev = True
+            except Exception as dl_err:
+                print(f"Warning: Gagal unduh Tagihan bulan sebelumnya {prev_out_row[1]}: {dl_err}")
+                tmpl_bytes = b""
+        else:
+            row = conn.execute(
+                """
+                SELECT file_path, COALESCE(item_id, ''), cycle_key
+                FROM opname_archives
+                WHERE source_type = 'TAGIHAN_TEMPLATE' AND item_id != ''
+                ORDER BY (CASE WHEN cycle_key = ? THEN 0 ELSE 1 END), archive_id DESC
+                LIMIT 1
+                """,
+                (cycle_key,),
+            ).fetchone()
+            latest_out_row = conn.execute(
+                """
+                SELECT cycle_key
+                FROM opname_archives
+                WHERE source_type = 'TAGIHAN_OUTPUT' AND item_id != ''
+                ORDER BY cycle_key DESC, archive_id DESC
+                LIMIT 1
+                """
+            ).fetchone()
+            conn.close()
+
+            if row and row[1]:
+                try:
+                    tmpl_bytes = download_file_from_onedrive(row[1])
+                    tmpl_filename = row[0] or f"MC-{cycle_m:02d}.xlsx"
+                except Exception as dl_err:
+                    print(f"Warning: Gagal unduh template MC cached {row[1]}: {dl_err}")
+                    tmpl_bytes = b""
+
+            if not tmpl_bytes and settings.TAGIHAN_TEMPLATE_SHARE_LINK:
+                try:
+                    tmpl_bytes, tmpl_filename = download_share_file_from_onedrive(settings.TAGIHAN_TEMPLATE_SHARE_LINK)
+                except Exception as share_err:
+                    send_whatsapp_message(reply_chat_id, f"❌ Gagal mengunduh `TAGIHAN_TEMPLATE_SHARE_LINK`: {share_err}", session)
+                    return
+
+            if not tmpl_bytes:
+                if latest_out_row and latest_out_row[0] and latest_out_row[0] < prev_cycle_key:
+                    ly, lm = map(int, latest_out_row[0].split("-"))
+                    nx_m, nx_y = (1, ly + 1) if lm == 12 else (lm + 1, ly)
+                    send_whatsapp_message(
+                        reply_chat_id,
+                        f"⚠️ Baseline Tagihan terakhir tersimpan pada `{latest_out_row[0]}` (`{prev_cycle_key}` belum ada).\n"
+                        f"Jalankan `/tagihan {nx_y:04d}-{nx_m:02d}` secara berurutan agar `S.D. BULAN LALU` terakumulasi otomatis, "
+                        f"atau lampirkan file `MC-{cycle_m:02d}.xlsx` bersama caption `/tagihan {cycle_key}`.",
+                        session,
+                    )
+                    return
+                send_whatsapp_message(
+                    reply_chat_id,
+                    "⚠️ Template `MC` belum tersedia.\n"
+                    "Kirim file `MC` terakhir dengan caption `/tagihan base <YYYY-MM>` (untuk rollover otomatis bulan-bulan berikutnya), "
+                    "atau kirim template bulan ini bersama caption `/tagihan`.",
+                    session,
+                )
+                return
 
     # Download DATA_UNTUK_VOL_<BULAN>_<TAHUN>.xlsx from OneDrive
     try:
@@ -1291,7 +1376,13 @@ def handle_tagihan_command(reply_chat_id: str, body_text: str, message: dict, se
         return
 
     try:
-        res = generate_tagihan_workbook(vista_bytes, tmpl_bytes, cycle_m, cycle_y)
+        res = generate_tagihan_workbook(
+            vista_bytes,
+            tmpl_bytes,
+            cycle_m,
+            cycle_y,
+            rollover_previous_month=rollover_prev,
+        )
     except Exception as gen_err:
         send_whatsapp_message(reply_chat_id, f"❌ Gagal membuat file Tagihan MC ({cycle_key}): {gen_err}", session)
         return
@@ -1310,11 +1401,12 @@ def handle_tagihan_command(reply_chat_id: str, body_text: str, message: dict, se
         for s in res["ordered_sheets"]
         if res["grand_totals"].get(s, 0.0) > 0
     ) or "• Belum ada volume opname > 0 pada siklus ini."
+    roll_note = f"\n🔄 Rollover `S.D. BULAN LALU`: dari `{prev_cycle_key}`" if res.get("rollover_applied") else ""
     warn_block = ""
     if res["warnings"]:
         warn_block = "\n\n⚠️ *Catatan:*\n" + "\n".join(f"- {w}" for w in res["warnings"][:5])
     caption = (
-        f"📑 *Tagihan MC Selesai (`{month_label} {cycle_y}`)*\n"
+        f"📑 *Tagihan MC Selesai (`{month_label} {cycle_y}`)*{roll_note}\n"
         f"Total Pilar 1 (sheet aktif): *Rp {res['total_grand']:,.2f}*\n\n"
         f"{gt_lines}{warn_block}\n\n"
         f"🔗 {out_arc.get('web_url', '')}"
