@@ -10,6 +10,7 @@ import openpyxl
 from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
 from openpyxl.utils import get_column_letter
 from openpyxl.worksheet.datavalidation import DataValidation
+from openpyxl.worksheet.filters import AutoFilter
 from openpyxl.worksheet.table import Table, TableColumn, TableFormula, TableStyleInfo
 
 from services.message_utils import parse_opname_date_str, resolve_billing_cycle
@@ -671,6 +672,7 @@ def build_prefilled_standard_xlsx(
 
     tname = f"TBL_{mon_abbr}"
     tbl = Table(displayName=tname, ref=f"B10:{last_col_l}{end_row}")
+    tbl.autoFilter = AutoFilter(ref=tbl.ref)
     tbl.tableStyleInfo = TableStyleInfo(name="TableStyleLight1", showRowStripes=True)
     calc_map = {
         "No.": "ROW()-10",
@@ -715,9 +717,28 @@ def build_prefilled_standard_xlsx(
         type="list",
         formula1='"Rumput,Ketrik,Striping"' if canon_aset == "RM" else f"=DAFTAR_BOQ!$A$2:$A${boq_end}",
         allow_blank=True,
+        errorStyle="stop",
+        showErrorMessage=True,
+        errorTitle="Item BOQ Tidak Valid",
+        error="Wajib pilih item dari dropdown daftar BOQ resmi. Jangan ketik manual.",
+        showInputMessage=True,
+        promptTitle="Pilih dari Dropdown",
+        prompt="Klik panah dropdown untuk memilih item BOQ resmi.",
     )
     ws.add_data_validation(dv_item)
     dv_item.add("J11:J500")
+
+    dv_week = DataValidation(
+        type="list",
+        formula1='"M1,M2,M3,M4,M5"',
+        allow_blank=True,
+        errorStyle="stop",
+        showErrorMessage=True,
+        errorTitle="Minggu Tidak Valid",
+        error="Pilih M1, M2, M3, M4, atau M5 dari dropdown.",
+    )
+    ws.add_data_validation(dv_week)
+    dv_week.add("D11:D500")
 
     ws.page_setup.orientation = ws.ORIENTATION_LANDSCAPE
     ws.page_setup.paperSize = ws.PAPERSIZE_A4
