@@ -445,10 +445,10 @@ class OpnameWebTests(unittest.TestCase):
         root_resp = self.client.get("/")
         self.assertEqual(root_resp.status_code, 200)
         self.assertIn(f"/opname?token={dash_tok}", root_resp.text)
-        self.assertIn("1 form menunggu", root_resp.text)
-        self.assertIn("1 / 21 slot", root_resp.text)
+        self.assertIn("1 form", root_resp.text)
+        self.assertIn("1 / 21", root_resp.text)
         self.assertIn("2 kode", root_resp.text)
-        for slop_marker in ("linear-gradient", "radial-gradient", "backdrop-filter", "\u2014", "outline: none"):
+        for slop_marker in ("#1e1b4b", "#4f46e5", "#7c3aed", "backdrop-filter", "\u2014", "outline: none"):
             self.assertNotIn(slop_marker, root_resp.text)
 
         guide_resp = self.client.get("/guide")

@@ -2000,6 +2000,14 @@ def _safe_action_link(url: str, label: str, empty_label: str, btn_class: str = "
     return f'<a class="{btn_class}" href="{html.escape(clean_url)}"{extra}>{html.escape(label)}</a>'
 
 
+def _console_href(url: str, fallback_href: str = "#workspace") -> tuple[str, bool]:
+    clean = (url or "").strip()
+    if not clean or clean == "#":
+        return fallback_href, False
+    is_ext = clean.startswith(("http://", "https://"))
+    return clean, is_ext
+
+
 def render_console_page_html(
     waha_url: str,
     logs_url: str,
@@ -2022,28 +2030,28 @@ def render_console_page_html(
     safe_logs_url = html.escape(logs_url)
     safe_cycle_lbl = html.escape(opname_cycle_label or "siklus berjalan")
 
-    pending_action = (
-        f'<a class="btn btn-sm btn-primary" href="{safe_editor_url}">Review Sekarang</a>'
-        if pending_count > 0
-        else '<span class="topbar-sub">Semua form scan telah diproses.</span>'
-    )
-    pending_tag = (
-        f'<span class="tag tag-warn mono">{pending_count} form menunggu</span>'
-        if pending_count > 0
-        else '<span class="tag tag-success mono">0 form menunggu</span>'
+    opname_xls_href, opname_xls_ext = _console_href(opname_excel_url)
+    sla_xls_href, sla_xls_ext = _console_href(sla_excel_url)
+    waha_href, waha_ext = _console_href(waha_url)
+
+    opname_xls_target = ' target="_blank" rel="noopener"' if opname_xls_ext else ""
+    sla_xls_target = ' target="_blank" rel="noopener"' if sla_xls_ext else ""
+    waha_target = ' target="_blank" rel="noopener"' if waha_ext else ""
+
+    waha_pill = (
+        f'<a class="cta-pill cta-dark" href="{html.escape(waha_href)}"{waha_target}>WAHA Scanner</a>'
+        if waha_ext
+        else '<a class="cta-pill cta-dark" href="#workspace">Server Tools</a>'
     )
 
-    hero_excel_cta = _safe_action_link(
-        opname_excel_url, "Buka Excel Opname", "Excel Opname Belum Diatur", "btn"
+    dir_opname_btn = _safe_action_link(
+        opname_excel_url, "Open Excel", "Not Configured", "dir-btn"
     )
-    row_opname_excel = _safe_action_link(
-        opname_excel_url, "Buka Workbook", "Belum Diatur", "btn btn-sm"
+    dir_sla_btn = _safe_action_link(
+        sla_excel_url, "Open SLA Sheet", "Not Configured", "dir-btn"
     )
-    row_sla_excel = _safe_action_link(
-        sla_excel_url, "Buka Spreadsheet", "Belum Diatur", "btn btn-sm"
-    )
-    row_waha_btn = _safe_action_link(
-        waha_url, "Buka WAHA", "WAHA Belum Diatur", "btn btn-sm"
+    dir_waha_btn = _safe_action_link(
+        waha_url, "Open WAHA", "Not Configured", "dir-btn"
     )
 
     return f"""<!DOCTYPE html>
@@ -2051,388 +2059,749 @@ def render_console_page_html(
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Konsol Operasional - AIS-VISTA</title>
+    <title>AIS-VISTA</title>
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-    <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;600&family=IBM+Plex+Sans:wght@400;600;700&display=swap" rel="stylesheet">
+    <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=Plus+Jakarta+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
     <style>
-{_BASE_CSS}
+:root {{
+    --outer-bg: #050607;
+    --stage-bg: #0A0C0E;
+    --surface-1: #0E1114;
+    --surface-pill: #15191D;
+    --border-subtle: #23282D;
+    --border-control: #6C7680;
+    --text-primary: #F4F6F8;
+    --text-dim: #A8B0B8;
+}}
 
-.console-nav {{
+* {{
+    box-sizing: border-box;
+}}
+
+html {{
+    font-size: 16px;
+    max-width: 100%;
+    overflow-x: clip;
+    scroll-behavior: smooth;
+}}
+
+body {{
+    margin: 0;
+    min-height: 100vh;
+    background-color: var(--outer-bg);
+    color: var(--text-primary);
+    font-family: 'Plus Jakarta Sans', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+    line-height: 1.5;
+    -webkit-font-smoothing: antialiased;
+}}
+
+.mono {{
+    font-family: 'IBM Plex Mono', ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    font-variant-numeric: tabular-nums;
+}}
+
+:focus-visible {{
+    outline: 2px solid #FFFFFF;
+    outline-offset: 2px;
+}}
+
+.shell {{
+    max-width: 1400px;
+    margin: 0 auto;
+    padding: 12px 14px 48px 14px;
+}}
+
+.console-top {{
     display: flex;
     flex-wrap: wrap;
     align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    padding: 6px 4px 14px 4px;
+}}
+
+.brand-mark {{
+    display: inline-flex;
+    align-items: center;
+    gap: 10px;
+    min-height: 44px;
+    color: var(--text-primary);
+    text-decoration: none;
+    font-weight: 600;
+    font-size: 1rem;
+    letter-spacing: -0.02em;
+    order: 1;
+}}
+
+.nav-pill {{
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: center;
+    gap: 4px;
+    width: 100%;
+    padding: 4px;
+    border-radius: 14px;
+    background-color: #111417;
+    border: 1px solid var(--border-subtle);
+    order: 3;
+}}
+
+.nav-pill a {{
+    display: inline-flex;
+    align-items: center;
+    min-height: 44px;
+    padding: 0 12px;
+    border-radius: 10px;
+    color: var(--text-dim);
+    text-decoration: none;
+    font-size: 0.875rem;
+    font-weight: 500;
+    transition: background-color 120ms ease, color 120ms ease;
+}}
+
+.nav-pill a:hover {{
+    color: #FFFFFF;
+    background-color: #1A1F24;
+}}
+
+.nav-pill a.nav-active {{
+    color: #FFFFFF;
+    background-color: #1E242B;
+    border: 1px solid var(--border-control);
+    font-weight: 600;
+}}
+
+.top-right-link {{
+    display: inline-flex;
+    align-items: center;
     gap: 8px;
+    min-height: 44px;
+    padding: 0 12px;
+    border-radius: 999px;
+    color: var(--text-primary);
+    text-decoration: none;
+    font-size: 0.875rem;
+    font-weight: 500;
+    order: 2;
 }}
 
-main.console-main {{
-    max-width: 1280px;
-    margin: 0 auto;
-    padding: 20px 16px 48px 16px;
+.top-right-link:hover {{
+    text-decoration: underline;
 }}
 
-.hero-grid {{
-    display: grid;
-    grid-template-columns: minmax(0, 1fr);
-    gap: 20px;
-    margin-bottom: 24px;
-}}
-
-.hero-grid > * {{
-    min-width: 0;
-}}
-
-.hero-copy {{
-    padding: 24px;
+.hero-stage {{
+    position: relative;
+    overflow: hidden;
+    border-radius: 20px;
+    border: 1px solid var(--border-subtle);
+    background:
+        radial-gradient(circle at 86% 14%, rgba(176, 194, 184, 0.20) 0%, rgba(10, 12, 14, 0) 48%),
+        radial-gradient(circle at 14% 88%, rgba(164, 178, 174, 0.14) 0%, rgba(10, 12, 14, 0) 42%),
+        var(--stage-bg);
+    padding: 44px 20px 32px 20px;
     display: flex;
     flex-direction: column;
-    justify-content: space-between;
-    gap: 18px;
+    align-items: center;
+    justify-content: center;
+    gap: 28px;
 }}
 
-.hero-eyebrow {{
-    font-size: 0.875rem;
-    font-weight: 700;
-    color: var(--accent);
-    margin-bottom: 8px;
+.hero-center {{
+    position: relative;
+    z-index: 2;
+    text-align: center;
+    max-width: 680px;
 }}
 
 .hero-title {{
     margin: 0 0 10px 0;
-    font-size: 1.65rem;
-    line-height: 1.25;
-    font-weight: 700;
-    color: var(--text-primary);
+    font-size: clamp(2.5rem, 6vw, 4.4rem);
+    font-weight: 600;
+    line-height: 1.06;
+    letter-spacing: -0.04em;
 }}
 
-.hero-desc {{
-    margin: 0;
+.brand-solid {{
+    color: #FFFFFF;
+}}
+
+.brand-dim {{
+    color: #B8C0C8;
+}}
+
+.hero-sub {{
+    margin: 0 0 26px 0;
     font-size: 1rem;
-    color: var(--text-secondary);
-    max-width: 60ch;
+    color: var(--text-dim);
+    font-weight: 400;
 }}
 
-.hero-actions {{
+.cta-row {{
     display: flex;
     flex-wrap: wrap;
+    justify-content: center;
+    gap: 12px;
+}}
+
+.cta-pill {{
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-height: 46px;
+    padding: 0 22px;
+    border-radius: 999px;
+    font-size: 0.9375rem;
+    font-weight: 600;
+    text-decoration: none;
+    transition: background-color 120ms ease, border-color 120ms ease;
+}}
+
+.cta-dark {{
+    background-color: var(--surface-pill);
+    color: var(--text-primary);
+    border: 1px solid var(--border-control);
+}}
+
+.cta-dark:hover {{
+    background-color: #20262C;
+    border-color: #9AA4AE;
+}}
+
+.cta-white {{
+    background-color: #FFFFFF;
+    color: #090B0D;
+    border: 1px solid #FFFFFF;
+}}
+
+.cta-white:hover {{
+    background-color: #E2E6EA;
+    border-color: #E2E6EA;
+}}
+
+.hero-stems {{
+    display: none;
+}}
+
+.telemetry-nodes {{
+    position: relative;
+    z-index: 2;
+    width: 100%;
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
     gap: 10px;
 }}
 
-.status-panel {{
-    padding: 20px;
+.node-card {{
     display: flex;
-    flex-direction: column;
-    gap: 14px;
+    align-items: center;
+    gap: 10px;
+    min-height: 54px;
+    padding: 10px 12px;
+    border-radius: 12px;
+    background-color: rgba(14, 17, 20, 0.85);
+    border: 1px solid var(--border-subtle);
+    color: var(--text-primary);
+    text-decoration: none;
+    transition: border-color 120ms ease;
 }}
 
-.status-panel h2 {{
-    margin: 0;
-    font-size: 1rem;
-    font-weight: 700;
+.node-card:hover {{
+    border-color: var(--border-control);
 }}
 
-.metric-item {{
-    padding-top: 12px;
-    border-top: 1px solid var(--border-divider);
-    display: flex;
-    flex-direction: column;
-    gap: 8px;
+.node-icon {{
+    width: 32px;
+    height: 32px;
+    border-radius: 50%;
+    border: 1px solid var(--border-control);
+    background-color: #14181C;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
+    color: var(--text-primary);
+    font-size: 0.75rem;
+    font-weight: 600;
 }}
 
-.metric-row {{
+.node-text {{
+    min-width: 0;
+}}
+
+.node-label {{
+    display: block;
+    font-size: 0.8125rem;
+    color: var(--text-dim);
+    line-height: 1.25;
+}}
+
+.node-val {{
+    display: block;
+    font-size: 0.9375rem;
+    font-weight: 600;
+    color: var(--text-primary);
+    line-height: 1.3;
+}}
+
+.node-line {{
+    display: none;
+}}
+
+.stage-footer-corners {{
+    display: none;
+}}
+
+.quick-strip {{
     display: flex;
     flex-wrap: wrap;
     align-items: center;
+    justify-content: center;
+    gap: 8px 26px;
+    padding: 18px 12px 6px 12px;
+}}
+
+.quick-link {{
+    display: inline-flex;
+    align-items: center;
+    min-height: 44px;
+    padding: 0 8px;
+    color: var(--text-dim);
+    text-decoration: none;
+    font-size: 0.9375rem;
+    font-weight: 500;
+    letter-spacing: -0.01em;
+    transition: color 120ms ease;
+}}
+
+.quick-link:hover {{
+    color: #FFFFFF;
+}}
+
+.directory {{
+    margin-top: 32px;
+    padding-top: 24px;
+    border-top: 1px solid var(--border-subtle);
+}}
+
+.directory-head {{
+    display: flex;
+    flex-wrap: wrap;
+    align-items: baseline;
     justify-content: space-between;
     gap: 8px;
+    margin-bottom: 16px;
 }}
 
-.metric-label {{
-    font-size: 0.9rem;
+.directory-head h2 {{
+    margin: 0;
+    font-size: 1.05rem;
     font-weight: 600;
-    color: var(--text-secondary);
-}}
-
-.metric-value {{
-    font-size: 1rem;
-    font-weight: 700;
     color: var(--text-primary);
 }}
 
-.progress-track {{
-    width: 100%;
-    height: 10px;
-    border-radius: 4px;
-    background-color: var(--bg-subtle);
-    border: 1px solid var(--border-control);
-    overflow: hidden;
+.directory-head span {{
+    font-size: 0.875rem;
+    color: var(--text-dim);
 }}
 
-.progress-fill {{
-    height: 100%;
-    background-color: var(--accent);
-}}
-
-.ops-grid {{
+.dir-grid {{
     display: grid;
     grid-template-columns: minmax(0, 1fr);
-    gap: 20px;
-    align-items: start;
-}}
-
-.ops-grid > * {{
-    min-width: 0;
-}}
-
-.section-heading {{
-    margin: 0 0 10px 0;
-    font-size: 1rem;
-    font-weight: 700;
-    color: var(--text-primary);
-}}
-
-.work-list {{
-    background-color: var(--bg-surface);
-    border: 1px solid var(--border-divider);
-    border-radius: var(--radius-panel);
-}}
-
-.work-row {{
-    padding: 16px;
-    display: flex;
-    flex-direction: column;
     gap: 12px;
-    border-bottom: 1px solid var(--border-divider);
 }}
 
-.work-row:last-child {{
-    border-bottom: 0;
-}}
-
-.work-row-info h3 {{
-    margin: 0 0 4px 0;
-    font-size: 1rem;
-    font-weight: 700;
-    color: var(--text-primary);
-}}
-
-.work-row-info p {{
-    margin: 0;
-    font-size: 0.9rem;
-    color: var(--text-secondary);
-}}
-
-.util-list {{
-    background-color: var(--bg-surface);
-    border: 1px solid var(--border-divider);
-    border-radius: var(--radius-panel);
-}}
-
-.util-row {{
-    padding: 14px 16px;
+.dir-item {{
+    background-color: var(--surface-1);
+    border: 1px solid var(--border-subtle);
+    border-radius: 14px;
+    padding: 16px 18px;
     display: flex;
     flex-wrap: wrap;
     align-items: center;
     justify-content: space-between;
-    gap: 10px;
-    border-bottom: 1px solid var(--border-divider);
+    gap: 12px;
 }}
 
-.util-row:last-child {{
-    border-bottom: 0;
-}}
-
-.util-row-text {{
-    flex: 1 1 200px;
+.dir-info {{
     min-width: 0;
+    flex: 1 1 220px;
 }}
 
-.util-row .btn {{
-    flex-shrink: 0;
-}}
-
-.util-row-text strong {{
-    display: block;
-    font-size: 0.95rem;
+.dir-info h3 {{
+    margin: 0 0 4px 0;
+    font-size: 0.98rem;
+    font-weight: 600;
     color: var(--text-primary);
 }}
 
-.util-row-text span {{
-    display: block;
-    font-size: 0.85rem;
-    color: var(--text-secondary);
+.dir-info p {{
+    margin: 0;
+    font-size: 0.875rem;
+    color: var(--text-dim);
 }}
 
-.console-footer {{
+.dir-btn {{
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-height: 44px;
+    padding: 0 16px;
+    border-radius: 999px;
+    background-color: var(--surface-pill);
+    border: 1px solid var(--border-control);
+    color: var(--text-primary);
+    text-decoration: none;
+    font-family: inherit;
+    font-size: 0.875rem;
+    font-weight: 500;
+    cursor: pointer;
+    flex-shrink: 0;
+    transition: background-color 120ms ease, border-color 120ms ease;
+}}
+
+.dir-btn:hover:not(:disabled) {{
+    background-color: #20262C;
+    border-color: #FFFFFF;
+}}
+
+.dir-btn:disabled {{
+    opacity: 0.45;
+    cursor: not-allowed;
+}}
+
+.console-foot {{
     margin-top: 28px;
     padding-top: 16px;
-    border-top: 1px solid var(--border-divider);
+    border-top: 1px solid var(--border-subtle);
     display: flex;
     flex-wrap: wrap;
     justify-content: space-between;
     gap: 8px;
-    font-size: 0.875rem;
-    color: var(--text-secondary);
+    font-size: 0.85rem;
+    color: var(--text-dim);
 }}
 
 @media (min-width: 960px) {{
-    main.console-main {{
-        padding: 28px 24px 60px 24px;
+    .shell {{
+        padding: 16px 24px 60px 24px;
     }}
 
-    .hero-grid {{
-        grid-template-columns: minmax(0, 1.35fr) minmax(0, 0.9fr);
-        gap: 24px;
+    .brand-mark {{
+        order: 1;
     }}
 
-    .hero-copy {{
-        padding: 28px;
+    .nav-pill {{
+        order: 2;
+        width: auto;
+        border-radius: 999px;
     }}
 
-    .hero-title {{
-        font-size: 2rem;
+    .nav-pill a {{
+        padding: 0 14px;
+        border-radius: 999px;
     }}
 
-    .ops-grid {{
-        grid-template-columns: minmax(0, 1.25fr) minmax(0, 0.75fr);
-        gap: 24px;
+    .top-right-link {{
+        order: 3;
     }}
 
-    .work-row {{
-        flex-direction: row;
+    .hero-stage {{
+        min-height: min(74vh, 640px);
+        padding: 64px 48px 110px 48px;
+    }}
+
+    .hero-stems {{
+        display: block;
+        position: absolute;
+        left: 50%;
+        bottom: 0;
+        transform: translateX(-50%);
+        width: 140px;
+        height: 155px;
+        pointer-events: none;
+        z-index: 1;
+    }}
+
+    .stem {{
+        position: absolute;
+        bottom: 0;
+        width: 1px;
+        background: linear-gradient(to top, rgba(255, 255, 255, 0) 0%, rgba(255, 255, 255, 0.55) 75%, rgba(255, 255, 255, 0) 100%);
+    }}
+
+    .stem-1 {{ left: 26px; height: 90px; opacity: 0.45; }}
+    .stem-2 {{ left: 52px; height: 145px; opacity: 0.7; }}
+    .stem-3 {{ left: 78px; height: 110px; opacity: 0.85; }}
+    .stem-4 {{ left: 104px; height: 130px; opacity: 0.5; }}
+
+    .telemetry-nodes {{
+        position: static;
+        display: block;
+        width: auto;
+    }}
+
+    .node-card {{
+        position: absolute;
+        background: transparent;
+        border: 0;
+        padding: 6px;
+        min-height: 44px;
+    }}
+
+    .node-tl {{ top: 20%; left: 5%; }}
+    .node-tr {{ top: 20%; right: 5%; flex-direction: row-reverse; text-align: right; }}
+    .node-bl {{ bottom: 24%; left: 5%; }}
+    .node-br {{ bottom: 24%; right: 5%; flex-direction: row-reverse; text-align: right; }}
+
+    .node-line {{
+        display: block;
+        width: 72px;
+        height: 1px;
+        background-color: rgba(255, 255, 255, 0.14);
+        margin: 0 8px;
+    }}
+
+    .stage-footer-corners {{
+        display: flex;
         align-items: center;
         justify-content: space-between;
+        position: absolute;
+        left: 28px;
+        right: 28px;
+        bottom: 24px;
+        z-index: 2;
     }}
 
-    .util-row {{
-        flex-wrap: nowrap;
+    .scroll-anchor {{
+        display: inline-flex;
+        align-items: center;
+        gap: 10px;
+        min-height: 44px;
+        padding: 0 14px 0 8px;
+        border-radius: 999px;
+        color: var(--text-dim);
+        text-decoration: none;
+        font-size: 0.875rem;
+        border: 1px solid var(--border-subtle);
+        background-color: rgba(14, 17, 20, 0.72);
+    }}
+
+    .scroll-anchor:hover {{
+        color: #FFFFFF;
+        border-color: var(--border-control);
+    }}
+
+    .scroll-circle {{
+        width: 26px;
+        height: 26px;
+        border-radius: 50%;
+        background-color: #FFFFFF;
+        color: #090B0D;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        font-weight: 700;
+        font-size: 0.85rem;
+    }}
+
+    .cycle-bar-wrap {{
+        text-align: right;
+    }}
+
+    .cycle-bar-label {{
+        display: block;
+        font-size: 0.85rem;
+        color: var(--text-primary);
+        margin-bottom: 6px;
+    }}
+
+    .cycle-track {{
+        width: 110px;
+        height: 3px;
+        border-radius: 2px;
+        background-color: #2A3036;
+        overflow: hidden;
+    }}
+
+    .cycle-fill {{
+        height: 100%;
+        background-color: #FFFFFF;
+    }}
+
+    .dir-grid {{
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 14px;
     }}
 }}
     </style>
 </head>
 <body>
-    <header class="topbar">
-        <div class="topbar-inner">
-            <div class="topbar-title-group">
-                <h1>AIS-VISTA</h1>
-                <div class="topbar-sub">Konsol Operasional Lapangan &amp; Tagihan</div>
-            </div>
-            <nav class="console-nav" aria-label="Navigasi Utama">
-                <a class="btn btn-sm" href="{safe_editor_url}">Editor Opname</a>
-                <a class="btn btn-sm" href="{safe_guide_url}">Panduan</a>
-                <a class="btn btn-sm" href="{safe_logs_url}" target="_blank" rel="noopener">Log Sistem</a>
+    <div class="shell">
+        <header class="console-top">
+            <a class="brand-mark" href="/">
+                <svg width="24" height="24" viewBox="0 0 24 24" aria-hidden="true">
+                    <circle cx="12" cy="12" r="9" fill="none" stroke="#F4F6F8" stroke-width="2.5"/>
+                    <circle cx="14.5" cy="12" r="4" fill="#050607"/>
+                </svg>
+                <span>AIS-VISTA</span>
+            </a>
+
+            <nav class="nav-pill" aria-label="Navigasi Utama">
+                <a class="nav-active" href="{safe_editor_url}">Editor</a>
+                <a href="{html.escape(opname_xls_href)}"{opname_xls_target}>Excel Vol</a>
+                <a href="{html.escape(sla_xls_href)}"{sla_xls_target}>Excel SLA</a>
+                <a href="{html.escape(waha_href)}"{waha_target}>WAHA</a>
+                <a href="{safe_logs_url}" target="_blank" rel="noopener">Logs</a>
+                <a href="{safe_guide_url}">Guide</a>
             </nav>
-        </div>
-    </header>
 
-    <main class="console-main">
-        <section class="hero-grid" aria-label="Ringkasan Utama">
-            <div class="panel hero-copy">
-                <div>
-                    <div class="hero-eyebrow">Integrasi WhatsApp, OCR, dan OneDrive</div>
-                    <h2 class="hero-title">Opname Volume dan Dokumentasi SLA dalam Satu Tempat.</h2>
-                    <p class="hero-desc">Periksa hasil pembacaan formulir scan sebelum masuk ke DATA_UNTUK_VOL, perbarui slot vendor per minggu lewat HP atau PC, dan pantau sinkronisasi SLA harian.</p>
-                </div>
-                <div class="hero-actions">
-                    <a class="btn btn-primary" href="{safe_editor_url}">Buka Editor Opname</a>
-                    {hero_excel_cta}
-                </div>
-            </div>
+            <a class="top-right-link" href="{safe_editor_url}">Open Editor &rarr;</a>
+        </header>
 
-            <aside class="panel status-panel" aria-labelledby="cycleStatusTitle">
-                <div class="metric-row">
-                    <h2 id="cycleStatusTitle">Ringkasan Siklus Aktif</h2>
-                    <span class="tag mono">{cycle_key}</span>
-                </div>
-
-                <div class="metric-item">
-                    <div class="metric-row">
-                        <span class="metric-label">Menunggu Review Scan</span>
-                        {pending_tag}
-                    </div>
-                    <div>{pending_action}</div>
-                </div>
-
-                <div class="metric-item">
-                    <div class="metric-row">
-                        <span class="metric-label">Progress Roster Opname</span>
-                        <span class="metric-value mono">{roster_done} / {roster_total} slot</span>
-                    </div>
-                    <div class="progress-track" role="progressbar" aria-valuenow="{roster_done}" aria-valuemin="0" aria-valuemax="{roster_total}" aria-label="Progress slot opname">
-                        <div class="progress-fill" style="width: {roster_pct}%;"></div>
+        <main>
+            <section class="hero-stage" aria-label="Console Overview">
+                <div class="hero-center">
+                    <h1 class="hero-title"><span class="brand-solid">AIS</span> <span class="brand-dim">VISTA</span></h1>
+                    <p class="hero-sub">Opname &amp; SLA Console</p>
+                    <div class="cta-row">
+                        {waha_pill}
+                        <a class="cta-pill cta-white" href="{safe_editor_url}">Open Editor</a>
                     </div>
                 </div>
 
-                <div class="metric-item">
-                    <div class="metric-row">
-                        <span class="metric-label">Update SLA Hari Ini</span>
-                        <span class="metric-value mono">{sla_today_count} kode</span>
-                    </div>
-                </div>
-            </aside>
-        </section>
+                <div class="telemetry-nodes">
+                    <a class="node-card node-tl" href="{safe_editor_url}">
+                        <span class="node-icon mono">SC</span>
+                        <span class="node-text">
+                            <span class="node-label">Pending Scan</span>
+                            <span class="node-val mono">{pending_count} form</span>
+                        </span>
+                        <span class="node-line" aria-hidden="true"></span>
+                    </a>
 
-        <section class="ops-grid" aria-label="Akses Pekerjaan dan Sistem">
-            <div>
-                <h2 class="section-heading">Dokumen &amp; Pencatatan</h2>
-                <div class="work-list">
-                    <div class="work-row">
-                        <div class="work-row-info">
-                            <h3>Editor &amp; Review Opname (HP &amp; PC)</h3>
-                            <p>Koreksi baris pekerjaan hasil OCR, ubah dimensi P x L x T, dan edit ulang slot tersimpan.</p>
+                    <a class="node-card node-tr" href="{safe_editor_url}">
+                        <span class="node-icon mono">SL</span>
+                        <span class="node-text">
+                            <span class="node-label">Roster</span>
+                            <span class="node-val mono">{roster_done} / {roster_total}</span>
+                        </span>
+                        <span class="node-line" aria-hidden="true"></span>
+                    </a>
+
+                    <a class="node-card node-bl" href="{html.escape(sla_xls_href)}"{sla_xls_target}>
+                        <span class="node-icon mono">DT</span>
+                        <span class="node-text">
+                            <span class="node-label">SLA Today</span>
+                            <span class="node-val mono">{sla_today_count} kode</span>
+                        </span>
+                        <span class="node-line" aria-hidden="true"></span>
+                    </a>
+
+                    <a class="node-card node-br" href="{html.escape(opname_xls_href)}"{opname_xls_target}>
+                        <span class="node-icon mono">CY</span>
+                        <span class="node-text">
+                            <span class="node-label">Cycle</span>
+                            <span class="node-val mono">{cycle_key}</span>
+                        </span>
+                        <span class="node-line" aria-hidden="true"></span>
+                    </a>
+                </div>
+
+                <div class="hero-stems" aria-hidden="true">
+                    <span class="stem stem-1"></span>
+                    <span class="stem stem-2"></span>
+                    <span class="stem stem-3"></span>
+                    <span class="stem stem-4"></span>
+                </div>
+
+                <div class="stage-footer-corners">
+                    <a class="scroll-anchor" href="#workspace">
+                        <span class="scroll-circle" aria-hidden="true">&darr;</span>
+                        <span>All Tools</span>
+                    </a>
+                    <div class="cycle-bar-wrap">
+                        <span class="cycle-bar-label mono">{cycle_key} ({roster_done}/{roster_total})</span>
+                        <div class="cycle-track" aria-hidden="true">
+                            <div class="cycle-fill" style="width: {roster_pct}%;"></div>
                         </div>
-                        <a class="btn btn-sm" href="{safe_editor_url}">Buka Editor</a>
                     </div>
-                    <div class="work-row">
-                        <div class="work-row-info">
+                </div>
+            </section>
+
+            <nav class="quick-strip" aria-label="Akses Cepat">
+                <a class="quick-link" href="{safe_editor_url}">Editor Opname</a>
+                <a class="quick-link" href="{html.escape(opname_xls_href)}"{opname_xls_target}>Excel Opname</a>
+                <a class="quick-link" href="{html.escape(sla_xls_href)}"{sla_xls_target}>Excel SLA</a>
+                <a class="quick-link" href="{html.escape(waha_href)}"{waha_target}>WAHA</a>
+                <a class="quick-link" href="{safe_logs_url}" target="_blank" rel="noopener">Logs</a>
+                <a class="quick-link" href="{safe_guide_url}">Guide</a>
+            </nav>
+
+            <section id="workspace" class="directory" aria-label="Direktori Sistem">
+                <div class="directory-head">
+                    <h2>Workspace Links</h2>
+                    <span class="mono">{safe_cycle_lbl}</span>
+                </div>
+
+                <div class="dir-grid">
+                    <div class="dir-item">
+                        <div class="dir-info">
+                            <h3>Editor Opname</h3>
+                            <p>Review OCR scans, edit dimensions, and manage weekly vendor slots.</p>
+                        </div>
+                        <a class="dir-btn" href="{safe_editor_url}">Open Editor</a>
+                    </div>
+
+                    <div class="dir-item">
+                        <div class="dir-info">
                             <h3>Excel Opname (DATA_UNTUK_VOL)</h3>
-                            <p>Database volume bulanan ({safe_cycle_lbl}) untuk seluruh tabel LOG dan rekap W1/W2.</p>
+                            <p>Monthly OneDrive workbook ({safe_cycle_lbl}) for LOG tables and W1/W2 summary.</p>
                         </div>
-                        {row_opname_excel}
+                        {dir_opname_btn}
                     </div>
-                    <div class="work-row">
-                        <div class="work-row-info">
+
+                    <div class="dir-item">
+                        <div class="dir-info">
                             <h3>Excel Progress SLA</h3>
-                            <p>Spreadsheet pusat pemantauan kode temuan SLA dan arsip foto lapangan.</p>
+                            <p>Master SLA tracking workbook synced with field photo updates.</p>
                         </div>
-                        {row_sla_excel}
+                        {dir_sla_btn}
+                    </div>
+
+                    <div class="dir-item">
+                        <div class="dir-info">
+                            <h3>WAHA Dashboard</h3>
+                            <p>WhatsApp session engine and linked device QR scanner.</p>
+                        </div>
+                        {dir_waha_btn}
+                    </div>
+
+                    <div class="dir-item">
+                        <div class="dir-info">
+                            <h3>System Logs</h3>
+                            <p>Live stdout tail for webhook, OCR, and OneDrive requests.</p>
+                        </div>
+                        <a class="dir-btn" href="{safe_logs_url}" target="_blank" rel="noopener">View Logs</a>
+                    </div>
+
+                    <div class="dir-item">
+                        <div class="dir-info">
+                            <h3>Guide &amp; Troubleshooting</h3>
+                            <p>WhatsApp commands, WAHA session reset, and VPS update notes.</p>
+                        </div>
+                        <a class="dir-btn" href="{safe_guide_url}">Open Guide</a>
                     </div>
                 </div>
-            </div>
+            </section>
+        </main>
 
-            <div>
-                <h2 class="section-heading">Operasional Server &amp; Bantuan</h2>
-                <div class="util-list">
-                    <div class="util-row">
-                        <div class="util-row-text">
-                            <strong>WhatsApp Scanner (WAHA)</strong>
-                            <span>Scan QR perangkat dan cek status koneksi sesi.</span>
-                        </div>
-                        {row_waha_btn}
-                    </div>
-                    <div class="util-row">
-                        <div class="util-row-text">
-                            <strong>Log Sistem Bot</strong>
-                            <span>Pantau proses webhook, OCR, dan sinkronisasi OneDrive.</span>
-                        </div>
-                        <a class="btn btn-sm" href="{safe_logs_url}" target="_blank" rel="noopener">Lihat Log</a>
-                    </div>
-                    <div class="util-row">
-                        <div class="util-row-text">
-                            <strong>Panduan &amp; Troubleshooting</strong>
-                            <span>Daftar perintah WhatsApp, reset WAHA, dan update server.</span>
-                        </div>
-                        <a class="btn btn-sm" href="{safe_guide_url}">Buka Panduan</a>
-                    </div>
-                </div>
-            </div>
-        </section>
-
-        <footer class="console-footer">
-            <span>AIS-VISTA Operasional Pemeliharaan &amp; Tagihan</span>
-            <span class="mono">Oracle Ampere VPS (ARM64)</span>
+        <footer class="console-foot">
+            <span>AIS-VISTA</span>
+            <span class="mono">Oracle Ampere ARM64</span>
         </footer>
-    </main>
+    </div>
 </body>
 </html>"""
 
