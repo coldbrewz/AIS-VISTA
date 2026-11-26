@@ -205,6 +205,37 @@ def upload_file_to_onedrive(
     return item_id, web_url
 
 
+def upload_private_file_to_onedrive(
+    file_bytes: bytes,
+    filename: str,
+    folder_path: str,
+    content_type: str = "application/json",
+) -> str:
+    """Upload bytes privately to `/me/drive/root:/{folder_path}/{filename}:/content` without creating a share link."""
+    token = get_ms_token()
+    session = get_retry_session()
+    upload_url = f"https://graph.microsoft.com/v1.0/me/drive/root:/{folder_path}/{filename}:/content"
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "Content-Type": content_type,
+    }
+    resp = session.put(upload_url, headers=headers, data=file_bytes, timeout=30)
+    resp.raise_for_status()
+    return str(resp.json().get("id") or "")
+
+
+def download_file_by_path_from_onedrive(folder_path: str, filename: str) -> bytes | None:
+    """Download file bytes by OneDrive path. Returns `None` on HTTP 404."""
+    token = get_ms_token()
+    session = get_retry_session()
+    dl_url = f"https://graph.microsoft.com/v1.0/me/drive/root:/{folder_path}/{filename}:/content"
+    resp = session.get(dl_url, headers={"Authorization": f"Bearer {token}"}, timeout=30)
+    if resp.status_code == 404:
+        return None
+    resp.raise_for_status()
+    return resp.content
+
+
 def download_file_from_onedrive(item_id: str, drive_id: str = "") -> bytes:
     """Download file bytes from OneDrive by drive item ID (supports shared drives when `drive_id` is passed)."""
     token = get_ms_token()

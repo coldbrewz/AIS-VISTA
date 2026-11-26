@@ -14,15 +14,27 @@ from fastapi.responses import HTMLResponse, JSONResponse
 from config import settings
 from services.message_utils import parse_opname_date_str, resolve_billing_cycle
 from services.opname_catalog import (
-    ALLOWED_VENDORS_BY_ASSET,
     ASSET_TITLES,
     ASSET_TO_TABLE,
-    OFFICIAL_VENDOR_ROSTER,
+    VALID_OPNAME_ASSETS,
     check_roster_pairing,
     normalize_asset_code,
     normalize_vendor,
     resolve_boq_item,
     resolve_wilayah,
+)
+from services.opname_roster import (
+    ROSTER_CONFIG_FILENAME,
+    ROSTER_CONFIG_FOLDER,
+    export_roster_payload,
+    get_active_roster,
+    get_allowed_vendors_for_asset,
+    import_roster_payload,
+    pull_roster_from_onedrive,
+    push_roster_to_onedrive,
+    set_roster_slot_active,
+    set_vendor_active,
+    upsert_roster_slot,
 )
 from services.opname_web_ui import (
     render_forbidden_page_html,
@@ -710,7 +722,8 @@ def create_opname_web_router(deps: dict[str, Any]) -> APIRouter:
             conn.close()
 
         active_pairs = {(v["aset"], v["vendor"], v["wilayah"]) for v in slots_map.values()}
-        roster_done = sum(1 for item in OFFICIAL_VENDOR_ROSTER if item in active_pairs)
+        active_roster = get_active_roster(db_path)
+        roster_done = sum(1 for item in active_roster if item in active_pairs)
 
         filtered_slots = [
             v for v in slots_map.values() if not filter_aset or v["aset"] == filter_aset
@@ -720,7 +733,7 @@ def create_opname_web_router(deps: dict[str, Any]) -> APIRouter:
         return {
             "cycles": cycles,
             "active_cycle": active_cycle,
-            "roster_progress": {"done": roster_done, "total": len(OFFICIAL_VENDOR_ROSTER)},
+            "roster_progress": {"done": roster_done, "total": len(active_roster)},
             "pending": pending_list,
             "slots": filtered_slots,
         }
@@ -770,8 +783,8 @@ def create_opname_web_router(deps: dict[str, Any]) -> APIRouter:
             "default_date": datetime.date.today().strftime("%Y-%m-%d"),
             "entries": entries,
             "boq_options": _build_boq_options_for_asset(aset, entries),
-            "vendor_options": list(ALLOWED_VENDORS_BY_ASSET.get(aset, ("MMS",))),
-            "official_roster": [list(t) for t in OFFICIAL_VENDOR_ROSTER],
+            "vendor_options": get_allowed_vendors_for_asset(aset, _db_url()),
+            "official_roster": [list(t) for t in get_active_roster(_db_url())],
             "warnings": record["warnings"],
             "has_media": has_media,
             "is_pdf": is_pdf,
@@ -976,6 +989,168 @@ def create_opname_web_router(deps: dict[str, Any]) -> APIRouter:
             "xlsx_url": xlsx_arch_info.get("web_url") or "",
             "whatsapp_notified": wa_notified,
             "slot_urls": slot_urls,
+        }
+
+    def _sync_roster_best_effort(db_path: str) -> tuple[bool, str]:
+        upload_fn = deps.get("upload_private_onedrive")
+        if not upload_fn:
+            return False, "Tersimpan lokal di SQLite (sync OneDrive belum terhubung)."
+        return push_roster_to_onedrive(db_path, upload_fn)
+
+    @router.get("/api/opname/roster")
+    def api_get_roster(token: str = Query("")):
+        if not verify_opname_token("DASHBOARD", token):
+            raise HTTPException(status_code=403, detail="Token dashboard tidak valid.")
+        data = export_roster_payload(_db_url())
+        data["valid_assets"] = [{"code": a, "title": ASSET_TITLES.get(a, a)} for a in VALID_OPNAME_ASSETS]
+        data["onedrive_path"] = f"{ROSTER_CONFIG_FOLDER}/{ROSTER_CONFIG_FILENAME}"
+        return data
+
+    @router.post("/api/opname/roster/slot")
+    async def api_upsert_roster_slot(request: Request, token: str = Query("")):
+        if not verify_opname_token("DASHBOARD", token):
+            raise HTTPException(status_code=403, detail="Token dashboard tidak valid.")
+        try:
+            body = await request.json()
+        except Exception:
+            raise HTTPException(status_code=400, detail="Payload JSON tidak valid.")
+        if not isinstance(body, dict):
+            raise HTTPException(status_code=400, detail="Payload JSON harus berupa objek.")
+
+        db_path = _db_url()
+        try:
+            slot_res = upsert_roster_slot(
+                db_path,
+                str(body.get("aset") or ""),
+                str(body.get("vendor") or ""),
+                str(body.get("wilayah") or ""),
+                active=bool(body.get("active", True)),
+                aliases=body.get("aliases"),
+            )
+        except ValueError as val_err:
+            raise HTTPException(status_code=422, detail=str(val_err))
+
+        synced, sync_note = _sync_roster_best_effort(db_path)
+        return {
+            "ok": True,
+            "slot": slot_res,
+            "onedrive_synced": synced,
+            "sync_note": sync_note,
+            "roster": export_roster_payload(db_path),
+        }
+
+    @router.post("/api/opname/roster/slot/toggle")
+    async def api_toggle_roster_slot(request: Request, token: str = Query("")):
+        if not verify_opname_token("DASHBOARD", token):
+            raise HTTPException(status_code=403, detail="Token dashboard tidak valid.")
+        try:
+            body = await request.json()
+        except Exception:
+            raise HTTPException(status_code=400, detail="Payload JSON tidak valid.")
+        if not isinstance(body, dict):
+            raise HTTPException(status_code=400, detail="Payload JSON harus berupa objek.")
+
+        db_path = _db_url()
+        try:
+            ok = set_roster_slot_active(
+                db_path,
+                str(body.get("aset") or ""),
+                str(body.get("vendor") or ""),
+                str(body.get("wilayah") or ""),
+                bool(body.get("active", True)),
+            )
+        except ValueError as val_err:
+            raise HTTPException(status_code=422, detail=str(val_err))
+
+        if not ok:
+            raise HTTPException(status_code=404, detail="Slot roster tidak ditemukan.")
+        synced, sync_note = _sync_roster_best_effort(db_path)
+        return {
+            "ok": True,
+            "onedrive_synced": synced,
+            "sync_note": sync_note,
+            "roster": export_roster_payload(db_path),
+        }
+
+    @router.post("/api/opname/roster/vendor/toggle")
+    async def api_toggle_vendor(request: Request, token: str = Query("")):
+        if not verify_opname_token("DASHBOARD", token):
+            raise HTTPException(status_code=403, detail="Token dashboard tidak valid.")
+        try:
+            body = await request.json()
+        except Exception:
+            raise HTTPException(status_code=400, detail="Payload JSON tidak valid.")
+        if not isinstance(body, dict):
+            raise HTTPException(status_code=400, detail="Payload JSON harus berupa objek.")
+
+        db_path = _db_url()
+        try:
+            ok = set_vendor_active(db_path, str(body.get("code") or ""), bool(body.get("active", True)))
+        except ValueError as val_err:
+            raise HTTPException(status_code=422, detail=str(val_err))
+
+        if not ok:
+            raise HTTPException(status_code=404, detail="Kode vendor tidak ditemukan.")
+        synced, sync_note = _sync_roster_best_effort(db_path)
+        return {
+            "ok": True,
+            "onedrive_synced": synced,
+            "sync_note": sync_note,
+            "roster": export_roster_payload(db_path),
+        }
+
+    @router.get("/api/opname/roster/export")
+    def api_export_roster(token: str = Query("")):
+        if not verify_opname_token("DASHBOARD", token):
+            raise HTTPException(status_code=403, detail="Token dashboard tidak valid.")
+        payload = export_roster_payload(_db_url())
+        raw = json.dumps(payload, indent=2, ensure_ascii=False).encode("utf-8")
+        return Response(
+            content=raw,
+            media_type="application/json",
+            headers={
+                "Content-Disposition": f'attachment; filename="{ROSTER_CONFIG_FILENAME}"',
+                "Cache-Control": "no-store",
+            },
+        )
+
+    @router.post("/api/opname/roster/import")
+    async def api_import_roster(request: Request, token: str = Query("")):
+        if not verify_opname_token("DASHBOARD", token):
+            raise HTTPException(status_code=403, detail="Token dashboard tidak valid.")
+        try:
+            body = await request.json()
+        except Exception:
+            raise HTTPException(status_code=400, detail="File JSON tidak valid.")
+        db_path = _db_url()
+        try:
+            imported = import_roster_payload(db_path, body, mark_local_mod=True)
+        except ValueError as val_err:
+            raise HTTPException(status_code=422, detail=str(val_err))
+        synced, sync_note = _sync_roster_best_effort(db_path)
+        return {
+            "ok": True,
+            "onedrive_synced": synced,
+            "sync_note": sync_note,
+            "roster": imported,
+        }
+
+    @router.post("/api/opname/roster/sync-onedrive")
+    def api_sync_roster_from_onedrive(token: str = Query("")):
+        if not verify_opname_token("DASHBOARD", token):
+            raise HTTPException(status_code=403, detail="Token dashboard tidak valid.")
+        dl_fn = deps.get("download_path_onedrive")
+        if not dl_fn:
+            raise HTTPException(status_code=501, detail="Sinkronisasi path OneDrive belum terhubung.")
+        db_path = _db_url()
+        ok, note = pull_roster_from_onedrive(db_path, dl_fn, only_if_unmodified=False)
+        if not ok:
+            status_code = 404 if "belum ada" in note.lower() else 502
+            raise HTTPException(status_code=status_code, detail=note)
+        return {
+            "ok": True,
+            "sync_note": note,
+            "roster": export_roster_payload(db_path),
         }
 
     return router

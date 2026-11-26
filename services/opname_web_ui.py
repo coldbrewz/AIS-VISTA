@@ -1721,6 +1721,77 @@ main.list-main {{
     display: none;
 }}
 
+.tabs-bar {{
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    margin-bottom: 16px;
+    border-bottom: 1px solid var(--border-divider);
+    padding-bottom: 12px;
+}}
+
+.tab-btn {{
+    min-height: 44px;
+    padding: 8px 16px;
+    border-radius: var(--radius-control);
+    border: 1px solid var(--border-control);
+    background-color: var(--bg-surface);
+    color: var(--text-primary);
+    font-family: inherit;
+    font-size: 0.9375rem;
+    font-weight: 600;
+    cursor: pointer;
+    transition: background-color 120ms ease, border-color 120ms ease;
+}}
+
+.tab-btn:hover {{
+    background-color: var(--bg-subtle);
+}}
+
+.tab-btn.is-active {{
+    background-color: var(--accent);
+    border-color: var(--accent);
+    color: #FFFFFF;
+}}
+
+.roster-form-grid {{
+    display: grid;
+    grid-template-columns: minmax(0, 1fr);
+    gap: 12px;
+    margin-bottom: 14px;
+}}
+
+.roster-form-grid > * {{
+    min-width: 0;
+}}
+
+.roster-filter-row {{
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    margin-bottom: 12px;
+}}
+
+.chk-label {{
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    min-height: 44px;
+    padding: 0 4px;
+    font-size: 0.9rem;
+    font-weight: 600;
+    color: var(--text-primary);
+    cursor: pointer;
+}}
+
+.chk-label input[type="checkbox"] {{
+    width: 20px;
+    height: 20px;
+    accent-color: var(--accent);
+}}
+
 @media (min-width: 960px) {{
     main.list-main {{
         padding: 20px 24px 60px 24px;
@@ -1728,6 +1799,11 @@ main.list-main {{
 
     .toolbar-panel {{
         grid-template-columns: 200px 240px 1fr auto;
+    }}
+
+    .roster-form-grid {{
+        grid-template-columns: 160px 1fr 220px 120px;
+        align-items: end;
     }}
 
     .mobile-slots-only {{
@@ -1784,71 +1860,181 @@ main.list-main {{
     </header>
 
     <main class="list-main">
-        <section class="panel toolbar-panel" aria-label="Filter Data Opname">
-            <div>
-                <label class="field-label" for="cycleSelect">Siklus Tagihan</label>
-                <select id="cycleSelect" class="select"></select>
-            </div>
-            <div>
-                <label class="field-label" for="asetSelect">Aset Pekerjaan</label>
-                <select id="asetSelect" class="select">
-                    <option value="">Semua Aset</option>
-                    <option value="PV">PV - Pavement</option>
-                    <option value="DR">DR - Drainase</option>
-                    <option value="FE">FE - Pagar ROW</option>
-                    <option value="GR">GR - Guardrail</option>
-                    <option value="SG">SG - Rambu &amp; Delineator</option>
-                    <option value="LC">LC - Landscape</option>
-                    <option value="RM">RM - Rumput &amp; Ketrik</option>
-                    <option value="CA">CA - TRC &amp; Pembersihan</option>
-                    <option value="WR">WR - Wire Rope</option>
-                </select>
-            </div>
-            <div class="roster-strip" style="margin-bottom: 0;">
-                <span class="tag mono" id="rosterProgressTag">Roster Terisi: 0 / 21 slot</span>
-            </div>
-            <div>
-                <button type="button" class="btn" id="refreshBtn">Muat Ulang</button>
-            </div>
-        </section>
-
-        <div id="listLoading" class="state-box" role="status" aria-live="polite">
-            <h2>Memuat Daftar Opname</h2>
-            <p>Mengambil daftar scan menunggu konfirmasi dan slot tersimpan...</p>
+        <div class="tabs-bar" role="tablist" aria-label="Menu Opname">
+            <button type="button" role="tab" id="tabSlotsBtn" class="tab-btn is-active" aria-selected="true" aria-controls="panelSlots">Slot &amp; Review</button>
+            <button type="button" role="tab" id="tabRosterBtn" class="tab-btn" aria-selected="false" aria-controls="panelRoster">Vendor &amp; Roster</button>
         </div>
 
-        <div id="listError" class="state-box banner-error hidden" role="alert">
-            <h2>ERROR: Gagal Memuat Daftar Slot</h2>
-            <p id="listErrorMsg" style="color: var(--err-text);">Tidak dapat terhubung ke server.</p>
-            <button type="button" class="btn" id="listRetryBtn">Coba Lagi</button>
+        <div id="panelSlots" role="tabpanel" aria-labelledby="tabSlotsBtn">
+            <section class="panel toolbar-panel" aria-label="Filter Data Opname">
+                <div>
+                    <label class="field-label" for="cycleSelect">Siklus Tagihan</label>
+                    <select id="cycleSelect" class="select"></select>
+                </div>
+                <div>
+                    <label class="field-label" for="asetSelect">Aset Pekerjaan</label>
+                    <select id="asetSelect" class="select">
+                        <option value="">Semua Aset</option>
+                        <option value="PV">PV - Pavement</option>
+                        <option value="DR">DR - Drainase</option>
+                        <option value="FE">FE - Pagar ROW</option>
+                        <option value="GR">GR - Guardrail</option>
+                        <option value="SG">SG - Rambu &amp; Delineator</option>
+                        <option value="LC">LC - Landscape</option>
+                        <option value="RM">RM - Rumput &amp; Ketrik</option>
+                        <option value="CA">CA - TRC &amp; Pembersihan</option>
+                        <option value="WR">WR - Wire Rope</option>
+                    </select>
+                </div>
+                <div class="roster-strip" style="margin-bottom: 0;">
+                    <span class="tag mono" id="rosterProgressTag">Roster Terisi: 0 / 21 slot</span>
+                </div>
+                <div>
+                    <button type="button" class="btn" id="refreshBtn">Muat Ulang</button>
+                </div>
+            </section>
+
+            <div id="listLoading" class="state-box" role="status" aria-live="polite">
+                <h2>Memuat Daftar Opname</h2>
+                <p>Mengambil daftar scan menunggu konfirmasi dan slot tersimpan...</p>
+            </div>
+
+            <div id="listError" class="state-box banner-error hidden" role="alert">
+                <h2>ERROR: Gagal Memuat Daftar Slot</h2>
+                <p id="listErrorMsg" style="color: var(--err-text);">Tidak dapat terhubung ke server.</p>
+                <button type="button" class="btn" id="listRetryBtn">Coba Lagi</button>
+            </div>
+
+            <div id="listContent" class="hidden">
+                <h2 class="section-title">Menunggu Review (Scan / Konfirmasi)</h2>
+                <div id="pendingContainer" class="slot-cards"></div>
+
+                <h2 class="section-title">Slot Tersimpan (DATA_UNTUK_VOL)</h2>
+                <div id="slotsMobileContainer" class="slot-cards mobile-slots-only"></div>
+                <div class="desktop-table-wrap" id="slotsTableWrap">
+                    <table class="slots-table">
+                        <thead>
+                            <tr>
+                                <th>Slot ID</th>
+                                <th>Aset</th>
+                                <th>Wilayah</th>
+                                <th>Vendor</th>
+                                <th>Minggu</th>
+                                <th>Baris</th>
+                                <th>Diperbarui</th>
+                                <th>Aksi</th>
+                            </tr>
+                        </thead>
+                        <tbody id="slotsTableBody"></tbody>
+                    </table>
+                </div>
+                <div id="slotsEmptyBox" class="panel hidden" style="text-align: center; padding: 24px;">
+                    <p style="margin: 0; color: var(--text-secondary);">Belum ada slot opname tersimpan pada siklus dan filter ini. Kirim form Excel atau Scan Opname melalui WhatsApp untuk mencatat slot baru.</p>
+                </div>
+            </div>
         </div>
 
-        <div id="listContent" class="hidden">
-            <h2 class="section-title">Menunggu Review (Scan / Konfirmasi)</h2>
-            <div id="pendingContainer" class="slot-cards"></div>
+        <div id="panelRoster" class="hidden" role="tabpanel" aria-labelledby="tabRosterBtn">
+            <div id="rosterFeedback" class="banner hidden" role="status" aria-live="polite"></div>
 
-            <h2 class="section-title">Slot Tersimpan (DATA_UNTUK_VOL)</h2>
-            <div id="slotsMobileContainer" class="slot-cards mobile-slots-only"></div>
-            <div class="desktop-table-wrap" id="slotsTableWrap">
-                <table class="slots-table">
-                    <thead>
-                        <tr>
-                            <th>Slot ID</th>
-                            <th>Aset</th>
-                            <th>Wilayah</th>
-                            <th>Vendor</th>
-                            <th>Minggu</th>
-                            <th>Baris</th>
-                            <th>Diperbarui</th>
-                            <th>Aksi</th>
-                        </tr>
-                    </thead>
-                    <tbody id="slotsTableBody"></tbody>
-                </table>
-            </div>
-            <div id="slotsEmptyBox" class="panel hidden" style="text-align: center; padding: 24px;">
-                <p style="margin: 0; color: var(--text-secondary);">Belum ada slot opname tersimpan pada siklus dan filter ini. Kirim form Excel atau Scan Opname melalui WhatsApp untuk mencatat slot baru.</p>
-            </div>
+            <section class="panel" style="margin-bottom: 16px;" aria-labelledby="addVendorTitle">
+                <h2 id="addVendorTitle" style="margin: 0 0 12px 0; font-size: 1.05rem;">Tambah / Perbarui Vendor &amp; Slot Roster</h2>
+                <form id="rosterAddForm">
+                    <div class="roster-form-grid">
+                        <div>
+                            <label class="field-label" for="rvCode">Kode Vendor</label>
+                            <input id="rvCode" class="input input-mono" type="text" maxlength="20" placeholder="Contoh: KARYA" required />
+                        </div>
+                        <div>
+                            <label class="field-label" for="rvAliases">Alias / Nama PT (opsional, pisah koma)</label>
+                            <input id="rvAliases" class="input" type="text" placeholder="Contoh: PT KARYA MANDIRI, KARYA" />
+                        </div>
+                        <div>
+                            <label class="field-label" for="rvAset">Aset Pekerjaan</label>
+                            <select id="rvAset" class="select">
+                                <option value="PV">PV - Pavement</option>
+                                <option value="DR">DR - Drainase</option>
+                                <option value="FE">FE - Pagar ROW</option>
+                                <option value="GR">GR - Guardrail</option>
+                                <option value="SG">SG - Rambu &amp; Delineator</option>
+                                <option value="LC">LC - Landscape</option>
+                                <option value="RM">RM - Rumput &amp; Ketrik</option>
+                                <option value="CA">CA - TRC &amp; Pembersihan</option>
+                                <option value="WR">WR - Wire Rope</option>
+                            </select>
+                        </div>
+                        <div>
+                            <label class="field-label" for="rvWil">Wilayah</label>
+                            <select id="rvWil" class="select">
+                                <option value="W1">W1</option>
+                                <option value="W2">W2</option>
+                            </select>
+                        </div>
+                    </div>
+                    <button type="submit" class="btn btn-primary" id="rvSubmitBtn">Simpan ke Roster</button>
+                </form>
+            </section>
+
+            <section class="panel" style="margin-bottom: 16px;" aria-labelledby="migrationTitle">
+                <h2 id="migrationTitle" style="margin: 0 0 8px 0; font-size: 1.05rem;">Migrasi VPS &amp; Backup OneDrive</h2>
+                <p style="margin: 0 0 12px 0; font-size: 0.9rem; color: var(--text-secondary);">
+                    Setiap perubahan tersimpan di SQLite dan otomatis disinkronkan ke <span class="mono" id="onedrivePathLabel">Arsip Opname/_config/opname_roster.json</span>.
+                    Sync terakhir: <strong class="mono" id="onedriveSyncTime">-</strong>
+                </p>
+                <div style="display: flex; flex-wrap: wrap; gap: 10px;">
+                    <a class="btn" id="exportRosterBtn" href="#">Ekspor JSON</a>
+                    <button type="button" class="btn" id="importRosterTriggerBtn">Impor JSON</button>
+                    <input type="file" id="importRosterFile" accept=".json,application/json" class="sr-only" />
+                    <button type="button" class="btn" id="pullOnedriveBtn">Tarik dari OneDrive</button>
+                </div>
+            </section>
+
+            <section class="panel" aria-labelledby="rosterListTitle">
+                <div class="roster-filter-row">
+                    <h2 id="rosterListTitle" style="margin: 0; font-size: 1.05rem;">Daftar Slot Roster (<span id="rosterActiveCount" class="mono">0</span> aktif)</h2>
+                    <div style="display: flex; flex-wrap: wrap; align-items: center; gap: 10px;">
+                        <select id="rosterAsetFilter" class="select" style="width: auto; min-width: 180px;" aria-label="Filter aset roster">
+                            <option value="">Semua Aset</option>
+                            <option value="PV">PV - Pavement</option>
+                            <option value="DR">DR - Drainase</option>
+                            <option value="FE">FE - Pagar ROW</option>
+                            <option value="GR">GR - Guardrail</option>
+                            <option value="SG">SG - Rambu &amp; Delineator</option>
+                            <option value="LC">LC - Landscape</option>
+                            <option value="RM">RM - Rumput &amp; Ketrik</option>
+                            <option value="CA">CA - TRC &amp; Pembersihan</option>
+                            <option value="WR">WR - Wire Rope</option>
+                        </select>
+                        <label class="chk-label">
+                            <input type="checkbox" id="showInactiveChk" />
+                            <span>Tampilkan Nonaktif</span>
+                        </label>
+                    </div>
+                </div>
+
+                <div id="rosterLoading" class="state-box" style="margin: 12px 0;" role="status">
+                    <p style="margin: 0;">Memuat daftar vendor &amp; roster...</p>
+                </div>
+                <div id="rosterMobileContainer" class="slot-cards mobile-slots-only"></div>
+                <div class="desktop-table-wrap" id="rosterTableWrap">
+                    <table class="slots-table">
+                        <thead>
+                            <tr>
+                                <th>Aset</th>
+                                <th>Wilayah</th>
+                                <th>Vendor</th>
+                                <th>Alias OCR</th>
+                                <th>Status</th>
+                                <th>Aksi</th>
+                            </tr>
+                        </thead>
+                        <tbody id="rosterTableBody"></tbody>
+                    </table>
+                </div>
+                <div id="rosterEmptyBox" class="hidden" style="padding: 16px 0; text-align: center; color: var(--text-secondary);">
+                    Tidak ada slot roster pada filter ini. Gunakan form di atas untuk menambah vendor baru.
+                </div>
+            </section>
         </div>
     </main>
 
@@ -1869,6 +2055,35 @@ main.list-main {{
         const slotsTableWrap = document.getElementById("slotsTableWrap");
         const slotsTableBody = document.getElementById("slotsTableBody");
         const slotsEmptyBox = document.getElementById("slotsEmptyBox");
+
+        const tabSlotsBtn = document.getElementById("tabSlotsBtn");
+        const tabRosterBtn = document.getElementById("tabRosterBtn");
+        const panelSlots = document.getElementById("panelSlots");
+        const panelRoster = document.getElementById("panelRoster");
+        const rosterFeedback = document.getElementById("rosterFeedback");
+        const rosterAddForm = document.getElementById("rosterAddForm");
+        const rvCode = document.getElementById("rvCode");
+        const rvAliases = document.getElementById("rvAliases");
+        const rvAset = document.getElementById("rvAset");
+        const rvWil = document.getElementById("rvWil");
+        const rvSubmitBtn = document.getElementById("rvSubmitBtn");
+        const exportRosterBtn = document.getElementById("exportRosterBtn");
+        const importRosterTriggerBtn = document.getElementById("importRosterTriggerBtn");
+        const importRosterFile = document.getElementById("importRosterFile");
+        const pullOnedriveBtn = document.getElementById("pullOnedriveBtn");
+        const onedrivePathLabel = document.getElementById("onedrivePathLabel");
+        const onedriveSyncTime = document.getElementById("onedriveSyncTime");
+        const rosterActiveCount = document.getElementById("rosterActiveCount");
+        const rosterAsetFilter = document.getElementById("rosterAsetFilter");
+        const showInactiveChk = document.getElementById("showInactiveChk");
+        const rosterLoading = document.getElementById("rosterLoading");
+        const rosterMobileContainer = document.getElementById("rosterMobileContainer");
+        const rosterTableWrap = document.getElementById("rosterTableWrap");
+        const rosterTableBody = document.getElementById("rosterTableBody");
+        const rosterEmptyBox = document.getElementById("rosterEmptyBox");
+
+        let rosterPayload = null;
+        exportRosterBtn.href = "/api/opname/roster/export?token=" + encodeURIComponent(TOKEN);
 
         function esc(str) {{
             return String(str == null ? "" : str)
@@ -1984,7 +2199,235 @@ main.list-main {{
         refreshBtn.addEventListener("click", function() {{ loadList(cycleSelect.value); }});
         listRetryBtn.addEventListener("click", function() {{ loadList(cycleSelect.value); }});
 
-        loadList("");
+        function showRosterBanner(type, text) {{
+            rosterFeedback.className = "banner " + (type === "success" ? "banner-success" : (type === "warn" ? "banner-warn" : "banner-error"));
+            rosterFeedback.setAttribute("role", type === "error" ? "alert" : "status");
+            rosterFeedback.innerHTML = '<div class="banner-title">' + esc(text) + '</div>';
+            rosterFeedback.classList.remove("hidden");
+        }}
+
+        function renderRosterList() {{
+            if (!rosterPayload) return;
+            const aliasesByVendor = new Map();
+            (rosterPayload.vendors || []).forEach(function(v) {{
+                aliasesByVendor.set(v.code, (v.aliases || []).join(", "));
+            }});
+
+            const allSlots = rosterPayload.roster || [];
+            const activeCnt = allSlots.filter(function(r) {{ return r.active; }}).length;
+            rosterActiveCount.textContent = String(activeCnt);
+            onedriveSyncTime.textContent = rosterPayload.onedrive_last_sync || "Belum ada sync";
+            if (rosterPayload.onedrive_path) {{
+                onedrivePathLabel.textContent = rosterPayload.onedrive_path;
+            }}
+
+            const fAset = rosterAsetFilter.value;
+            const showInactive = showInactiveChk.checked;
+            const rows = allSlots.filter(function(r) {{
+                if (fAset && r.aset !== fAset) return false;
+                if (!showInactive && !r.active) return false;
+                return true;
+            }});
+
+            if (rows.length === 0) {{
+                rosterMobileContainer.innerHTML = "";
+                rosterTableBody.innerHTML = "";
+                rosterTableWrap.classList.add("hidden");
+                rosterEmptyBox.classList.remove("hidden");
+                return;
+            }}
+
+            rosterEmptyBox.classList.add("hidden");
+            rosterTableWrap.classList.remove("hidden");
+
+            rosterMobileContainer.innerHTML = rows.map(function(r) {{
+                const statusTag = r.active
+                    ? '<span class="tag tag-success">AKTIF</span>'
+                    : '<span class="tag tag-error">NONAKTIF</span>';
+                const toggleLabel = r.active ? "Nonaktifkan" : "Aktifkan";
+                const btnCls = r.active ? "btn btn-sm btn-danger roster-toggle-btn" : "btn btn-sm roster-toggle-btn";
+                return '<div class="slot-card">' +
+                    '<div class="slot-card-head">' +
+                        '<strong class="mono">' + esc(r.aset + " | " + r.wilayah + " | " + r.vendor) + '</strong>' +
+                        statusTag +
+                    '</div>' +
+                    '<div class="slot-meta">Alias: ' + esc(aliasesByVendor.get(r.vendor) || r.vendor) + '</div>' +
+                    '<div class="slot-actions">' +
+                        '<button type="button" class="' + btnCls + '" data-aset="' + esc(r.aset) + '" data-vendor="' + esc(r.vendor) + '" data-wil="' + esc(r.wilayah) + '" data-next="' + (r.active ? "0" : "1") + '">' + toggleLabel + '</button>' +
+                    '</div>' +
+                '</div>';
+            }}).join("");
+
+            rosterTableBody.innerHTML = rows.map(function(r) {{
+                const statusTag = r.active
+                    ? '<span class="tag tag-success">AKTIF</span>'
+                    : '<span class="tag tag-error">NONAKTIF</span>';
+                const toggleLabel = r.active ? "Nonaktifkan" : "Aktifkan";
+                const btnCls = r.active ? "btn btn-sm btn-danger roster-toggle-btn" : "btn btn-sm roster-toggle-btn";
+                return '<tr>' +
+                    '<td class="mono" style="font-weight: 600;">' + esc(r.aset) + '</td>' +
+                    '<td class="mono">' + esc(r.wilayah) + '</td>' +
+                    '<td class="mono" style="font-weight: 600;">' + esc(r.vendor) + '</td>' +
+                    '<td>' + esc(aliasesByVendor.get(r.vendor) || r.vendor) + '</td>' +
+                    '<td>' + statusTag + '</td>' +
+                    '<td><button type="button" class="' + btnCls + '" data-aset="' + esc(r.aset) + '" data-vendor="' + esc(r.vendor) + '" data-wil="' + esc(r.wilayah) + '" data-next="' + (r.active ? "0" : "1") + '">' + toggleLabel + '</button></td>' +
+                '</tr>';
+            }}).join("");
+
+            document.querySelectorAll(".roster-toggle-btn").forEach(function(btn) {{
+                btn.addEventListener("click", function() {{
+                    const nextActive = btn.dataset.next === "1";
+                    btn.disabled = true;
+                    fetch("/api/opname/roster/slot/toggle?token=" + encodeURIComponent(TOKEN), {{
+                        method: "POST",
+                        headers: {{ "Content-Type": "application/json" }},
+                        body: JSON.stringify({{
+                            aset: btn.dataset.aset,
+                            vendor: btn.dataset.vendor,
+                            wilayah: btn.dataset.wil,
+                            active: nextActive,
+                        }}),
+                    }})
+                    .then(function(resp) {{ return resp.json().then(function(b) {{ return {{ ok: resp.ok, body: b }}; }}); }})
+                    .then(function(res) {{
+                        if (!res.ok) throw new Error((res.body && res.body.detail) || "Gagal mengubah status slot.");
+                        rosterPayload = res.body.roster;
+                        renderRosterList();
+                        showRosterBanner(res.body.onedrive_synced ? "success" : "warn", (nextActive ? "OK: Slot diaktifkan. " : "OK: Slot dinonaktifkan. ") + (res.body.sync_note || ""));
+                    }})
+                    .catch(function(err) {{
+                        btn.disabled = false;
+                        showRosterBanner("error", "ERROR: " + err.message);
+                    }});
+                }});
+            }});
+        }}
+
+        function loadRoster() {{
+            rosterLoading.classList.remove("hidden");
+            rosterTableWrap.classList.add("hidden");
+            rosterEmptyBox.classList.add("hidden");
+            fetch("/api/opname/roster?token=" + encodeURIComponent(TOKEN))
+                .then(function(resp) {{
+                    return resp.json().then(function(b) {{
+                        if (!resp.ok) throw new Error((b && b.detail) || ("Status " + resp.status));
+                        return b;
+                    }});
+                }})
+                .then(function(data) {{
+                    rosterPayload = data;
+                    rosterLoading.classList.add("hidden");
+                    renderRosterList();
+                }})
+                .catch(function(err) {{
+                    rosterLoading.classList.add("hidden");
+                    showRosterBanner("error", "ERROR: Gagal memuat daftar roster: " + err.message);
+                }});
+        }}
+
+        function activateTab(tabName) {{
+            const isRoster = tabName === "roster";
+            tabSlotsBtn.classList.toggle("is-active", !isRoster);
+            tabSlotsBtn.setAttribute("aria-selected", !isRoster ? "true" : "false");
+            tabRosterBtn.classList.toggle("is-active", isRoster);
+            tabRosterBtn.setAttribute("aria-selected", isRoster ? "true" : "false");
+            panelSlots.classList.toggle("hidden", isRoster);
+            panelRoster.classList.toggle("hidden", !isRoster);
+            if (isRoster) {{
+                loadRoster();
+            }} else {{
+                loadList(cycleSelect.value);
+            }}
+        }}
+
+        tabSlotsBtn.addEventListener("click", function() {{ activateTab("slots"); }});
+        tabRosterBtn.addEventListener("click", function() {{ activateTab("roster"); }});
+        rosterAsetFilter.addEventListener("change", renderRosterList);
+        showInactiveChk.addEventListener("change", renderRosterList);
+
+        rosterAddForm.addEventListener("submit", function(e) {{
+            e.preventDefault();
+            rvSubmitBtn.disabled = true;
+            rvSubmitBtn.textContent = "Menyimpan...";
+            fetch("/api/opname/roster/slot?token=" + encodeURIComponent(TOKEN), {{
+                method: "POST",
+                headers: {{ "Content-Type": "application/json" }},
+                body: JSON.stringify({{
+                    vendor: rvCode.value,
+                    aliases: rvAliases.value,
+                    aset: rvAset.value,
+                    wilayah: rvWil.value,
+                    active: true,
+                }}),
+            }})
+            .then(function(resp) {{ return resp.json().then(function(b) {{ return {{ ok: resp.ok, body: b }}; }}); }})
+            .then(function(res) {{
+                if (!res.ok) throw new Error((res.body && res.body.detail) || "Gagal menyimpan vendor ke roster.");
+                rvCode.value = "";
+                rvAliases.value = "";
+                rosterPayload = res.body.roster;
+                renderRosterList();
+                showRosterBanner(res.body.onedrive_synced ? "success" : "warn", "OK: Vendor & slot disimpan. " + (res.body.sync_note || ""));
+            }})
+            .catch(function(err) {{
+                showRosterBanner("error", "ERROR: " + err.message);
+            }})
+            .finally(function() {{
+                rvSubmitBtn.disabled = false;
+                rvSubmitBtn.textContent = "Simpan ke Roster";
+            }});
+        }});
+
+        importRosterTriggerBtn.addEventListener("click", function() {{ importRosterFile.click(); }});
+        importRosterFile.addEventListener("change", function() {{
+            const f = importRosterFile.files && importRosterFile.files[0];
+            if (!f) return;
+            f.text().then(function(txt) {{
+                const parsed = JSON.parse(txt);
+                return fetch("/api/opname/roster/import?token=" + encodeURIComponent(TOKEN), {{
+                    method: "POST",
+                    headers: {{ "Content-Type": "application/json" }},
+                    body: JSON.stringify(parsed),
+                }});
+            }})
+            .then(function(resp) {{ return resp.json().then(function(b) {{ return {{ ok: resp.ok, body: b }}; }}); }})
+            .then(function(res) {{
+                if (!res.ok) throw new Error((res.body && res.body.detail) || "File JSON tidak valid.");
+                rosterPayload = res.body.roster;
+                renderRosterList();
+                showRosterBanner(res.body.onedrive_synced ? "success" : "warn", "OK: Konfigurasi roster berhasil diimpor. " + (res.body.sync_note || ""));
+            }})
+            .catch(function(err) {{
+                showRosterBanner("error", "ERROR Impor JSON: " + err.message);
+            }})
+            .finally(function() {{
+                importRosterFile.value = "";
+            }});
+        }});
+
+        pullOnedriveBtn.addEventListener("click", function() {{
+            pullOnedriveBtn.disabled = true;
+            fetch("/api/opname/roster/sync-onedrive?token=" + encodeURIComponent(TOKEN), {{ method: "POST" }})
+                .then(function(resp) {{ return resp.json().then(function(b) {{ return {{ ok: resp.ok, body: b }}; }}); }})
+                .then(function(res) {{
+                    if (!res.ok) throw new Error((res.body && res.body.detail) || "Gagal menarik dari OneDrive.");
+                    rosterPayload = res.body.roster;
+                    renderRosterList();
+                    showRosterBanner("success", "OK: " + (res.body.sync_note || "Dipulihkan dari OneDrive."));
+                }})
+                .catch(function(err) {{
+                    showRosterBanner("error", "ERROR: " + err.message);
+                }})
+                .finally(function() {{
+                    pullOnedriveBtn.disabled = false;
+                }});
+        }});
+
+        if (window.location.hash === "#roster") {{
+            activateTab("roster");
+        }} else {{
+            loadList("");
+        }}
     }})();
     </script>
 </body>

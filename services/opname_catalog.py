@@ -115,24 +115,30 @@ OFFICIAL_VENDOR_ROSTER: Tuple[Tuple[str, str, str], ...] = (
 
 
 def check_roster_pairing(aset: str, canonical_vendor: str, wilayah: str) -> Tuple[bool, str]:
-    """Validate `(aset, vendor, wilayah)` against OFFICIAL_VENDOR_ROSTER without blocking override after confirm."""
+    """Validate `(aset, vendor, wilayah)` against active roster without blocking override after confirm."""
     if not aset or not canonical_vendor or not wilayah:
         return False, "Aset, vendor, atau wilayah belum lengkap."
-    if (aset, canonical_vendor, wilayah) in OFFICIAL_VENDOR_ROSTER:
+    try:
+        from services.opname_roster import get_active_roster
+        roster = get_active_roster()
+    except Exception:
+        roster = list(OFFICIAL_VENDOR_ROSTER)
+
+    if (aset, canonical_vendor, wilayah) in roster:
         return True, ""
-    expected_wil = sorted({w for a, v, w in OFFICIAL_VENDOR_ROSTER if a == aset and v == canonical_vendor})
+    expected_wil = sorted({w for a, v, w in roster if a == aset and v == canonical_vendor})
     if expected_wil:
         return (
             False,
             f"Di roster resmi, vendor *{canonical_vendor}* untuk *{aset}* bertugas di *{'/'.join(expected_wil)}*, bukan *{wilayah}*.",
         )
-    expected_vends = sorted({v for a, v, w in OFFICIAL_VENDOR_ROSTER if a == aset and w == wilayah})
+    expected_vends = sorted({v for a, v, w in roster if a == aset and w == wilayah})
     if expected_vends:
         return (
             False,
-            f"Vendor *{canonical_vendor}* tidak terdaftar di roster *{aset} {wilayah}* (resmi: {', '.join(expected_vends)}).",
+            f"Vendor *{canonical_vendor}* tidak terdaftar di roster aktif *{aset} {wilayah}* (resmi: {', '.join(expected_vends)}).",
         )
-    return False, f"Kombinasi *{aset} {wilayah} {canonical_vendor}* tidak ada di roster resmi."
+    return False, f"Kombinasi *{aset} {wilayah} {canonical_vendor}* tidak ada di roster aktif."
 
 # Official Wilayah boundaries per Service Level Agreement 2026.xlsx Legend sheet
 W1_MIN_METERS = 26035
@@ -297,9 +303,17 @@ def resolve_wilayah(lokasi: str) -> Tuple[bool, Optional[str], Optional[str], st
 
 
 def normalize_vendor(raw_vendor: str, aset: str) -> Tuple[bool, Optional[str], str]:
-    """Strictly validate and normalize vendor name. Never defaults silently."""
+    """Strictly validate and normalize vendor name against dynamic SQLite/catalog roster."""
+    try:
+        from services.opname_roster import get_allowed_vendors_for_asset, get_vendor_alias_map
+        alias_map = get_vendor_alias_map()
+        allowed_list = get_allowed_vendors_for_asset(aset)
+    except Exception:
+        alias_map = VENDOR_ALIASES
+        allowed_list = list(ALLOWED_VENDORS_BY_ASSET.get(aset, ()))
+
+    allowed = ", ".join(allowed_list)
     if not raw_vendor or not raw_vendor.strip():
-        allowed = ", ".join(ALLOWED_VENDORS_BY_ASSET.get(aset, ()))
         return False, None, f"Vendor wajib diisi (tidak boleh kosong). Pilihan {aset}: {allowed}."
 
     cleaned = re.sub(r"[^A-Z0-9 ]", " ", raw_vendor.upper())
@@ -307,18 +321,16 @@ def normalize_vendor(raw_vendor: str, aset: str) -> Tuple[bool, Optional[str], s
     cleaned = re.sub(r"\s+", " ", cleaned).strip()
 
     if not cleaned:
-        allowed = ", ".join(ALLOWED_VENDORS_BY_ASSET.get(aset, ()))
         return False, None, f"Vendor '{raw_vendor}' tidak valid. Pilihan {aset}: {allowed}."
 
-    canonical = VENDOR_ALIASES.get(cleaned)
+    canonical = alias_map.get(cleaned)
     if not canonical:
-        for alias, target in sorted(VENDOR_ALIASES.items(), key=lambda kv: len(kv[0]), reverse=True):
+        for alias, target in sorted(alias_map.items(), key=lambda kv: len(kv[0]), reverse=True):
             if re.search(rf"\b{re.escape(alias)}\b", cleaned):
                 canonical = target
                 break
 
     if not canonical:
-        allowed = ", ".join(ALLOWED_VENDORS_BY_ASSET.get(aset, ()))
         return False, None, f"Vendor '{raw_vendor}' tidak dikenal. Vendor resmi {aset}: {allowed}."
 
     return True, canonical, ""

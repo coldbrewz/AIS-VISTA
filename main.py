@@ -47,6 +47,7 @@ from services.microsoft import (
     OPNAME_MONTH_NAMES,
     append_opname_rows,
     delete_opname_rows_by_id,
+    download_file_by_path_from_onedrive,
     download_file_from_onedrive,
     download_share_file_from_onedrive,
     ensure_monthly_opname_workbook,
@@ -54,6 +55,12 @@ from services.microsoft import (
     update_excel_row,
     upload_file_to_onedrive,
     upload_photo_to_onedrive,
+    upload_private_file_to_onedrive,
+)
+from services.opname_roster import (
+    ensure_roster_tables,
+    get_active_roster,
+    pull_roster_from_onedrive,
 )
 from services.opname_web import (
     build_review_url,
@@ -484,6 +491,20 @@ async def init_waha_session():
             await asyncio.sleep(2)
     print("INIT: Failed to reach WAHA after 60 seconds.")
 
+async def _auto_restore_roster_from_onedrive():
+    try:
+        ok, note = await asyncio.to_thread(
+            pull_roster_from_onedrive,
+            settings.DB_URL,
+            download_file_by_path_from_onedrive,
+            True,
+        )
+        if ok:
+            print(f"ROSTER SYNC: {note}")
+    except Exception as e:
+        print(f"ROSTER SYNC: skipped ({e})")
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     try:
@@ -495,6 +516,7 @@ async def lifespan(app: FastAPI):
         task1 = asyncio.create_task(waha_watchdog())
         task2 = asyncio.create_task(auto_update_waha())
         task3 = asyncio.create_task(daily_recap_scheduler())
+        asyncio.create_task(_auto_restore_roster_from_onedrive())
         asyncio.create_task(telegram_poller())
         asyncio.create_task(email_poller())
         yield
@@ -612,6 +634,7 @@ def init_db():
         c.execute("ALTER TABLE opname_archives ADD COLUMN web_url TEXT DEFAULT ''")
     conn.commit()
     conn.close()
+    ensure_roster_tables(settings.DB_URL)
 
 init_db()
 
@@ -1093,16 +1116,17 @@ def handle_status_opname_command(reply_chat_id: str, text_lower: str, session: s
         wk = str(op_id).rsplit("-", 1)[-1]
         by_slot.setdefault((aset, wil, vend), set()).add(wk)
 
-    lines = [f"📋 *STATUS OPNAME ROSTER ({cycle_y:04d}-{cycle_m:02d}, 21 Slot)*\n"]
+    active_roster = get_active_roster(settings.DB_URL)
+    lines = [f"📋 *STATUS OPNAME ROSTER ({cycle_y:04d}-{cycle_m:02d}, {len(active_roster)} Slot)*\n"]
     done_cnt = 0
-    for aset, vend, wil in OFFICIAL_VENDOR_ROSTER:
+    for aset, vend, wil in active_roster:
         wks = sorted(by_slot.get((aset, wil, vend), set()))
         if wks:
             done_cnt += 1
             lines.append(f"✅ {aset} | {wil} | {vend} : {', '.join(wks)}")
         else:
             lines.append(f"⏳ {aset} | {wil} | {vend} : belum ada")
-    lines.append(f"\nTerisi: *{done_cnt}/{len(OFFICIAL_VENDOR_ROSTER)}* slot.")
+    lines.append(f"\nTerisi: *{done_cnt}/{len(active_roster)}* slot.")
     send_whatsapp_message(reply_chat_id, "\n".join(lines), session)
 
 
@@ -2266,6 +2290,7 @@ def read_root(request: Request):
     active_cycle = f"{def_y:04d}-{def_m:02d}"
     pending_count = 0
     roster_done = 0
+    roster_total = len(OFFICIAL_VENDOR_ROSTER)
     sla_today_count = 0
 
     try:
@@ -2310,7 +2335,9 @@ def read_root(request: Request):
                     (f"XLS-{yy_mm}-%",),
                 ).fetchall()
             }
-            roster_done = sum(1 for item in OFFICIAL_VENDOR_ROSTER if item in active_pairs)
+            active_roster = get_active_roster(settings.DB_URL)
+            roster_total = len(active_roster)
+            roster_done = sum(1 for item in active_roster if item in active_pairs)
 
             today_str = datetime.date.today().strftime("%Y-%m-%d")
             sla_row = conn.execute(
@@ -2336,7 +2363,7 @@ def read_root(request: Request):
             "cycle_key": active_cycle,
             "pending_count": pending_count,
             "roster_done": roster_done,
-            "roster_total": len(OFFICIAL_VENDOR_ROSTER),
+            "roster_total": roster_total,
             "sla_today_count": sla_today_count,
         },
     )
@@ -2399,6 +2426,8 @@ app.include_router(
             "delete_slot_rows": lambda *a, **kw: delete_opname_rows_by_id(*a, **kw),
             "archive_file": lambda *a, **kw: _archive_opname_file_to_onedrive(*a, **kw),
             "download_onedrive": lambda *a, **kw: download_file_from_onedrive(*a, **kw),
+            "upload_private_onedrive": lambda *a, **kw: upload_private_file_to_onedrive(*a, **kw),
+            "download_path_onedrive": lambda *a, **kw: download_file_by_path_from_onedrive(*a, **kw),
             "render_pdf_pages": lambda *a, **kw: _render_pdf_pages_to_jpeg(*a, **kw),
             "send_whatsapp": lambda *a, **kw: send_whatsapp_message(*a, **kw),
             "format_commit_reply": lambda *a, **kw: _format_commit_reply(*a, **kw),
