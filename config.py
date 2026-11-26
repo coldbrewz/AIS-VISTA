@@ -31,6 +31,8 @@ class Settings(BaseSettings):
     OPNAME_ENABLED: bool = True
     OPNAME_AUTO_MONTHLY: bool = True
     OPNAME_CYCLE_YEAR: int = 2026
+    PUBLIC_BASE_URL: str = "http://ais-vista.duckdns.org:5001"
+    OPNAME_WEB_SECRET: str = ""
 
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
 
@@ -39,6 +41,11 @@ class Settings(BaseSettings):
         url = self.WAHA_URL.strip() if self.WAHA_URL else ""
         if url and not url.startswith(("http://", "https://")):
             self.WAHA_URL = f"http://{url}"
+
+        pub_url = self.PUBLIC_BASE_URL.strip().rstrip("/") if self.PUBLIC_BASE_URL else ""
+        if pub_url and not pub_url.startswith(("http://", "https://")):
+            pub_url = f"http://{pub_url}"
+        self.PUBLIC_BASE_URL = pub_url
 
         vikey_url = self.VIKEY_BASE_URL.strip() if self.VIKEY_BASE_URL else ""
         if vikey_url:

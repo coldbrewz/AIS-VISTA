@@ -55,6 +55,15 @@ from services.microsoft import (
     upload_file_to_onedrive,
     upload_photo_to_onedrive,
 )
+from services.opname_web import (
+    build_review_url,
+    create_opname_web_router,
+    make_opname_token,
+)
+from services.opname_web_ui import (
+    render_console_page_html,
+    render_guide_page_html,
+)
 from services.tagihan_generator import generate_tagihan_workbook, parse_tagihan_cycle
 
 import logging
@@ -547,7 +556,26 @@ def init_db():
                  source_path TEXT,
                  warnings_text TEXT,
                  status TEXT DEFAULT 'PENDING',
-                 created_at TEXT
+                 created_at TEXT,
+                 reply_chat_id TEXT DEFAULT '',
+                 session TEXT DEFAULT 'default',
+                 sender_label TEXT DEFAULT ''
+                 )''')
+    c.execute('''CREATE TABLE IF NOT EXISTS opname_slots (
+                 slot_id TEXT PRIMARY KEY,
+                 cycle_key TEXT,
+                 aset TEXT,
+                 wilayah TEXT,
+                 vendor TEXT,
+                 minggu TEXT,
+                 payload_json TEXT,
+                 source_json TEXT DEFAULT '',
+                 xlsx_json TEXT DEFAULT '',
+                 reply_chat_id TEXT DEFAULT '',
+                 session TEXT DEFAULT 'default',
+                 sender_label TEXT DEFAULT '',
+                 status TEXT DEFAULT 'ACTIVE',
+                 updated_at TEXT
                  )''')
     c.execute('''CREATE TABLE IF NOT EXISTS opname_archives (
                  archive_id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -570,6 +598,13 @@ def init_db():
         c.execute("ALTER TABLE opname_entries ADD COLUMN drive_id TEXT DEFAULT ''")
     if "item_id" not in existing_cols:
         c.execute("ALTER TABLE opname_entries ADD COLUMN item_id TEXT DEFAULT ''")
+    pending_cols = {row[1] for row in c.execute("PRAGMA table_info(opname_pending)").fetchall()}
+    if "reply_chat_id" not in pending_cols:
+        c.execute("ALTER TABLE opname_pending ADD COLUMN reply_chat_id TEXT DEFAULT ''")
+    if "session" not in pending_cols:
+        c.execute("ALTER TABLE opname_pending ADD COLUMN session TEXT DEFAULT 'default'")
+    if "sender_label" not in pending_cols:
+        c.execute("ALTER TABLE opname_pending ADD COLUMN sender_label TEXT DEFAULT ''")
     arc_cols = {row[1] for row in c.execute("PRAGMA table_info(opname_archives)").fetchall()}
     if "item_id" not in arc_cols:
         c.execute("ALTER TABLE opname_archives ADD COLUMN item_id TEXT DEFAULT ''")
@@ -730,6 +765,8 @@ def _commit_opname_slots(
     sender_label: str,
     source_type: str,
     archive_items: list[tuple[str, dict]],
+    reply_chat_id: str = "",
+    session: str = "default",
 ) -> list[dict]:
     if not settings.OPNAME_EXCEL_SHARE_LINK:
         raise Exception("`OPNAME_EXCEL_SHARE_LINK` belum diatur di server bot.")
@@ -737,6 +774,13 @@ def _commit_opname_slots(
     results = []
     created_now = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     archive_ref = next((it.get("web_url") for _, it in archive_items if it.get("web_url")), "-")
+    src_arch_json = ""
+    xls_arch_json = ""
+    for f_src_type, arc in archive_items:
+        if f_src_type == "SCAN_SRC" and arc and not src_arch_json:
+            src_arch_json = json.dumps(arc)
+        elif f_src_type in ("XLSX", "WEB_EDITOR") and arc and not xls_arch_json:
+            xls_arch_json = json.dumps(arc)
     for sl in slots_data:
         slot_id = sl["slot_id"]
         cycle_key = sl["cycle_key"]
@@ -860,6 +904,36 @@ def _commit_opname_slots(
                         created_now,
                     ),
                 )
+        existing_slot = c.execute(
+            "SELECT COALESCE(source_json, ''), COALESCE(reply_chat_id, ''), COALESCE(session, 'default') FROM opname_slots WHERE UPPER(slot_id) = ?",
+            (slot_id.upper(),),
+        ).fetchone()
+        slot_src_json = src_arch_json or (existing_slot[0] if existing_slot else "")
+        slot_reply_chat = reply_chat_id or (existing_slot[1] if existing_slot else "")
+        slot_session = session or (existing_slot[2] if existing_slot else "default")
+        c.execute(
+            """
+            INSERT OR REPLACE INTO opname_slots (
+                slot_id, cycle_key, aset, wilayah, vendor, minggu, payload_json,
+                source_json, xlsx_json, reply_chat_id, session, sender_label, status, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'ACTIVE', ?)
+            """,
+            (
+                slot_id,
+                cycle_key,
+                aset,
+                wilayah,
+                vendor,
+                minggu,
+                json.dumps(sl),
+                slot_src_json,
+                xls_arch_json,
+                slot_reply_chat,
+                slot_session,
+                sender_label,
+                created_now,
+            ),
+        )
         conn.commit()
         conn.close()
 
@@ -896,12 +970,14 @@ def _format_commit_reply(results: list[dict], source_label: str) -> str:
         item_lines = "\n".join(
             f"  • *{kw}* (`{ik}`): *{vol:g} {sat}*" for (kw, ik, sat), vol in agg.items()
         )
+        edit_url = build_review_url(settings.PUBLIC_BASE_URL, res["slot_id"])
+        edit_line = f"\n✏️ Edit ulang (HP/PC): {edit_url}" if edit_url else ""
         blocks.append(
             f"\nID: `{res['slot_id']}` ({action_note})\n"
             f"Siklus: {month_names[cycle_m - 1]} {cycle_y} | Minggu: *{res['minggu']}*\n"
             f"Aset / Wilayah / Vendor: *{res['aset']}* / *{res['wilayah']}* / *{res['vendor']}*\n"
             f"Total Baris: {res['appended']}\n"
-            f"{item_lines}\n"
+            f"{item_lines}{edit_line}\n"
             f"_Batalkan? Ketik `/undo {res['slot_id']}`_"
         )
     return "\n".join(blocks)
@@ -915,13 +991,17 @@ def _stage_pending_confirmation(
     xlsx_path: str,
     source_path: str,
     warnings: list[str],
+    reply_chat_id: str = "",
+    session: str = "default",
+    sender_label: str = "",
 ) -> None:
     conn = sqlite3.connect(settings.DB_URL)
     conn.execute(
         """
         INSERT OR REPLACE INTO opname_pending (
-            pending_id, kind, aset, payload_json, xlsx_path, source_path, warnings_text, status, created_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, 'PENDING', ?)
+            pending_id, kind, aset, payload_json, xlsx_path, source_path, warnings_text,
+            status, created_at, reply_chat_id, session, sender_label
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, 'PENDING', ?, ?, ?, ?)
         """,
         (
             pending_id,
@@ -932,6 +1012,9 @@ def _stage_pending_confirmation(
             source_path,
             "\n".join(warnings),
             datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            reply_chat_id,
+            session,
+            sender_label,
         ),
     )
     conn.commit()
@@ -966,7 +1049,14 @@ def handle_simpan_command(reply_chat_id: str, sender_label: str, body_text: str,
         archive_items.append(("XLSX", json.loads(xlsx_path)))
 
     try:
-        results = _commit_opname_slots(slots_data, sender_label, kind, archive_items)
+        results = _commit_opname_slots(
+            slots_data,
+            sender_label,
+            kind,
+            archive_items,
+            reply_chat_id=reply_chat_id,
+            session=session,
+        )
     except Exception as e:
         send_whatsapp_message(reply_chat_id, f"❌ Gagal menyimpan `{pending_id}` ke OneDrive: {e}", session)
         return
@@ -1113,6 +1203,10 @@ def handle_undo_command(reply_chat_id: str, body_text: str, session: str):
         c.execute(
             "UPDATE opname_entries SET status = 'VOID' WHERE UPPER(opname_id) = ?",
             (opname_id,),
+        )
+        c.execute(
+            "UPDATE opname_slots SET status = 'VOID', updated_at = ? WHERE UPPER(slot_id) = ?",
+            (datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"), opname_id),
         )
         conn.commit()
         conn.close()
@@ -1465,21 +1559,33 @@ def process_opname_xlsx_message(
             json.dumps(xlsx_arch_info),
             "",
             res.roster_warnings,
+            reply_chat_id=reply_chat_id,
+            session=session,
+            sender_label=sender_label,
         )
         warn_txt = "\n".join(f"• {w}" for w in res.roster_warnings)
         slot_txt = ", ".join(s["slot_id"] for s in slots_data)
+        review_link = build_review_url(settings.PUBLIC_BASE_URL, conf_id)
+        link_block = f"\n\n🌐 Review / edit lewat HP & PC:\n{review_link}" if review_link else ""
         send_whatsapp_message(
             reply_chat_id,
             f"⚠️ *Butuh Konfirmasi Roster ({conf_id})*\n"
             f"Slot terdeteksi: `{slot_txt}`\n"
             f"{warn_txt}\n\n"
-            f"Tetap simpan data ini ke DATA UNTUK VOL? Ketik:\n`/simpan {conf_id}`",
+            f"Tetap simpan data ini ke DATA UNTUK VOL? Ketik:\n`/simpan {conf_id}`{link_block}",
             session,
         )
         return True
 
     try:
-        results = _commit_opname_slots(slots_data, sender_label, "XLSX", [("XLSX", xlsx_arch_info)])
+        results = _commit_opname_slots(
+            slots_data,
+            sender_label,
+            "XLSX",
+            [("XLSX", xlsx_arch_info)],
+            reply_chat_id=reply_chat_id,
+            session=session,
+        )
     except Exception as e:
         unmark_processed(processing_key)
         send_whatsapp_message(reply_chat_id, f"❌ Gagal menulis data Excel ke OneDrive: {e}", session)
@@ -1692,15 +1798,21 @@ def process_opname_scan_message(
         json.dumps(xlsx_arch_info),
         json.dumps(src_arch_info),
         warnings,
+        reply_chat_id=reply_chat_id,
+        session=session,
+        sender_label=sender_label,
     )
 
     warn_block = ("\n\n⚠️ *Catatan Roster:*\n" + "\n".join(f"• {w}" for w in warnings)) if warnings else ""
+    review_link = build_review_url(settings.PUBLIC_BASE_URL, scan_id)
+    link_block = f"\n\n🌐 *Review & edit cepat (HP / PC):*\n{review_link}" if review_link else ""
     preview_msg = (
         f"🔎 *Hasil Scan Opname (`{scan_id}`)*\n"
         f"Aset / Minggu: *{aset}* / *{first_slot['minggu']}* | Vendor: *{first_slot['vendor']}*\n"
         + "\n".join(preview_lines[:20])
         + warn_block
-        + f"\n\n✅ Ketik `/simpan {scan_id}` jika angka sudah benar, atau edit file Excel di bawah lalu kirim balik dengan caption `Opname`."
+        + link_block
+        + f"\n\n✅ Ketik `/simpan {scan_id}` jika angka sudah benar, atau edit via link di atas / file Excel di bawah."
     )
     send_whatsapp_message(reply_chat_id, preview_msg, session)
     send_whatsapp_document(
@@ -2137,488 +2249,110 @@ from fastapi.responses import HTMLResponse
 
 @app.get("/", response_class=HTMLResponse)
 def read_root(request: Request):
-    # Retrieve current VPS hostname/IP dynamically from request headers
     host = request.headers.get("host", "")
-    
-    # Check if we are running in the production workspace (domain-based)
     if "astrainfrasolutions.id" in host:
-        # Production reverse-proxied links (Nginx maps port 80/443 directly)
         waha_url = "https://waha.astrainfrasolutions.id"
         logs_url = "/logs"
         guide_url = "/guide"
     else:
-        # Local / private VPS backup links
         ip_only = host.split(":")[0] if host else "129.225.9.167"
         waha_url = f"http://{ip_only}:3000"
-        logs_url = f"http://{ip_only}:5001/logs"
-        guide_url = f"http://{ip_only}:5001/guide"
+        logs_url = "/logs"
+        guide_url = "/guide"
 
     opname_excel_link = settings.OPNAME_EXCEL_SHARE_LINK or "#"
     opname_cycle_label = "siklus 26-25"
-    if settings.OPNAME_AUTO_MONTHLY:
+    def_m, def_y = resolve_billing_cycle(datetime.date.today())
+    active_cycle = f"{def_y:04d}-{def_m:02d}"
+    pending_count = 0
+    roster_done = 0
+    sla_today_count = 0
+
+    try:
+        conn = sqlite3.connect(settings.DB_URL)
         try:
-            conn_wb = sqlite3.connect(settings.DB_URL)
-            latest_wb = conn_wb.execute(
-                "SELECT cycle_key, web_url FROM opname_workbooks ORDER BY cycle_key DESC LIMIT 1"
+            if settings.OPNAME_AUTO_MONTHLY:
+                latest_wb = conn.execute(
+                    "SELECT cycle_key, web_url FROM opname_workbooks ORDER BY cycle_key DESC LIMIT 1"
+                ).fetchone()
+                if latest_wb and latest_wb[1]:
+                    opname_excel_link = latest_wb[1]
+                    opname_cycle_label = f"siklus {latest_wb[0]}"
+
+            pend_row = conn.execute(
+                "SELECT COUNT(*) FROM opname_pending WHERE status = 'PENDING'"
             ).fetchone()
-            conn_wb.close()
-            if latest_wb and latest_wb[1]:
-                opname_excel_link = latest_wb[1]
-                opname_cycle_label = f"siklus {latest_wb[0]}"
-        except Exception:
-            pass
+            pending_count = int(pend_row[0]) if pend_row else 0
 
-    html_content = f"""
-    <!DOCTYPE html>
-    <html lang="id">
-    <head>
-        <meta charset="UTF-8">
-        <meta name="viewport" content="width=device-width, initial-scale=1.0">
-        <title>VISTA Integration Console</title>
-        <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@300;400;600;700&display=swap" rel="stylesheet">
-        <style>
-            * {{
-                box-sizing: border-box;
-                margin: 0;
-                padding: 0;
-            }}
-            body {{
-                font-family: 'Plus Jakarta Sans', sans-serif;
-                background: linear-gradient(135deg, #0f172a 0%, #1e1b4b 100%);
-                color: #f8fafc;
-                min-height: 100vh;
-                display: flex;
-                flex-direction: column;
-                align-items: center;
-                justify-content: center;
-                padding: 20px;
-            }}
-            .container {{
-                width: 100%;
-                max-width: 900px;
-                background: rgba(30, 41, 59, 0.5);
-                backdrop-filter: blur(16px);
-                border: 1px solid rgba(255, 255, 255, 0.08);
-                border-radius: 24px;
-                padding: 40px;
-                box-shadow: 0 20px 40px rgba(0, 0, 0, 0.3);
-            }}
-            header {{
-                text-align: center;
-                margin-bottom: 40px;
-            }}
-            h1 {{
-                font-size: 2.5rem;
-                font-weight: 700;
-                background: linear-gradient(to right, #38bdf8, #818cf8);
-                -webkit-background-clip: text;
-                -webkit-text-fill-color: transparent;
-                margin-bottom: 10px;
-            }}
-            .subtitle {{
-                color: #94a3b8;
-                font-size: 1.1rem;
-            }}
-            .status-badge {{
-                display: inline-flex;
-                align-items: center;
-                background: rgba(16, 185, 129, 0.1);
-                color: #34d399;
-                padding: 6px 16px;
-                border-radius: 99px;
-                font-size: 0.9rem;
-                font-weight: 600;
-                border: 1px solid rgba(52, 211, 153, 0.2);
-                margin-top: 15px;
-            }}
-            .status-badge::before {{
-                content: '';
-                display: inline-block;
-                width: 8px;
-                height: 8px;
-                background-color: #10b981;
-                border-radius: 50%;
-                margin-right: 8px;
-                box-shadow: 0 0 8px #10b981;
-            }}
-            .grid {{
-                display: grid;
-                grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
-                gap: 25px;
-                margin-bottom: 30px;
-            }}
-            .card {{
-                background: rgba(15, 23, 42, 0.4);
-                border: 1px solid rgba(255, 255, 255, 0.05);
-                border-radius: 18px;
-                padding: 30px;
-                display: flex;
-                flex-direction: column;
-                justify-content: space-between;
-                transition: transform 0.2s ease, border-color 0.2s ease;
-            }}
-            .card:hover {{
-                transform: translateY(-4px);
-                border-color: rgba(129, 140, 248, 0.3);
-            }}
-            .card-title {{
-                font-size: 1.3rem;
-                font-weight: 600;
-                margin-bottom: 12px;
-                color: #e2e8f0;
-            }}
-            .card-desc {{
-                color: #94a3b8;
-                font-size: 0.95rem;
-                line-height: 1.5;
-                margin-bottom: 25px;
-                flex-grow: 1;
-            }}
-            .btn {{
-                display: block;
-                text-align: center;
-                padding: 12px 20px;
-                background: linear-gradient(to right, #4f46e5, #6366f1);
-                color: #ffffff;
-                text-decoration: none;
-                border-radius: 12px;
-                font-weight: 600;
-                transition: opacity 0.2s ease;
-            }}
-            .btn:hover {{
-                opacity: 0.9;
-            }}
-            .btn-secondary {{
-                background: rgba(255, 255, 255, 0.08);
-                border: 1px solid rgba(255, 255, 255, 0.1);
-                color: #e2e8f0;
-            }}
-            .btn-secondary:hover {{
-                background: rgba(255, 255, 255, 0.12);
-            }}
-            footer {{
-                text-align: center;
-                color: #64748b;
-                font-size: 0.85rem;
-                margin-top: 30px;
-            }}
-            a.excel-btn {{
-                background: linear-gradient(to right, #059669, #10b981);
-            }}
-        </style>
-    </head>
-    <body>
-        <div class="container">
-            <header>
-                <h1>VISTA Integration Console</h1>
-                <p class="subtitle">Console Manajemen Central untuk WAHA &amp; Python Bot</p>
-                <div class="status-badge">Sistem Online</div>
-            </header>
-            
-            <div class="grid">
-                <!-- Card 1: WAHA Dashboard -->
-                <div class="card">
-                    <div>
-                        <div class="card-title">WhatsApp Scanner</div>
-                        <p class="card-desc">Gunakan ini untuk scan QR Code WhatsApp baru, memantau session engine, dan menghubungkan nomor mandor ke bot.</p>
-                    </div>
-                    <a href="{waha_url}" target="_blank" class="btn">Buka WAHA Dashboard</a>
-                </div>
+            cycles_found = [
+                r[0]
+                for r in conn.execute(
+                    "SELECT DISTINCT cycle_key FROM opname_slots WHERE status = 'ACTIVE' ORDER BY cycle_key DESC"
+                ).fetchall()
+                if r and r[0]
+            ]
+            if cycles_found and active_cycle not in cycles_found:
+                active_cycle = cycles_found[0]
 
-                <!-- Card 2: System Logs -->
-                <div class="card">
-                    <div>
-                        <div class="card-title">System Log Terminal</div>
-                        <p class="card-desc">Pantau aktivitas bot secara real-time. Bagus untuk memverifikasi proses update SLA, AI OCR, dan debug.</p>
-                    </div>
-                    <a href="{logs_url}" target="_blank" class="btn btn-secondary">Lihat Log Bot</a>
-                </div>
+            cy_y, cy_m = map(int, active_cycle.split("-"))
+            yy_mm = f"{cy_y % 100:02d}{cy_m:02d}"
+            active_pairs = {
+                (normalize_asset_code(a) or a, v, w)
+                for a, v, w in conn.execute(
+                    "SELECT aset, vendor, wilayah FROM opname_slots WHERE cycle_key = ? AND status = 'ACTIVE'",
+                    (active_cycle,),
+                ).fetchall()
+            }
+            active_pairs |= {
+                (normalize_asset_code(a) or a, v, w)
+                for a, v, w in conn.execute(
+                    "SELECT DISTINCT aset, vendor, wilayah FROM opname_entries WHERE status = 'ACTIVE' AND opname_id LIKE ?",
+                    (f"XLS-{yy_mm}-%",),
+                ).fetchall()
+            }
+            roster_done = sum(1 for item in OFFICIAL_VENDOR_ROSTER if item in active_pairs)
 
-                <!-- Card 3: MS Excel Link -->
-                <div class="card">
-                    <div>
-                        <div class="card-title">Excel Spreadsheet</div>
-                        <p class="card-desc">Buka dokumen Excel pusat yang sinkron dengan bot ini untuk melihat data progress SLA secara real-time.</p>
-                    </div>
-                    <a href="{settings.EXCEL_SHARE_LINK}" target="_blank" class="btn excel-btn">Buka Excel Online</a>
-                </div>
+            today_str = datetime.date.today().strftime("%Y-%m-%d")
+            sla_row = conn.execute(
+                "SELECT COUNT(DISTINCT kode) FROM daily_updates WHERE date = ?",
+                (today_str,),
+            ).fetchone()
+            sla_today_count = int(sla_row[0]) if sla_row else 0
+        finally:
+            conn.close()
+    except Exception:
+        pass
 
-                <!-- Card 3b: MS Excel Opname Link -->
-                <div class="card">
-                    <div>
-                        <div class="card-title">Excel Opname (Volume)</div>
-                        <p class="card-desc">Buka database volume opname bulanan ({opname_cycle_label}) yang terhubung ke tabel log &amp; matriks W1/W2.</p>
-                    </div>
-                    <a href="{opname_excel_link}" target="_blank" class="btn excel-btn">Buka Excel Opname</a>
-                </div>
-
-                <!-- Card 4: FAQ & Docs -->
-                <div class="card">
-                    <div>
-                        <div class="card-title">Panduan &amp; FAQ</div>
-                        <p class="card-desc">Buka dokumentasi lengkap cara ganti nomor WA, troubleshooting error SQLite/Docker, dan daftar perintah penting.</p>
-                    </div>
-                    <a href="{guide_url}" target="_blank" class="btn btn-secondary" style="background: linear-gradient(to right, #7c3aed, #8b5cf6);">Buka Panduan</a>
-                </div>
-            </div>
-
-            <footer>
-                <p>&copy; 2026 Project AIS-VISTA. Running on Oracle Ampere VPS (ARM64).</p>
-            </footer>
-        </div>
-    </body>
-    </html>
-    """
+    opname_editor_url = f"/opname?token={make_opname_token('DASHBOARD')}"
+    html_content = render_console_page_html(
+        waha_url=waha_url,
+        logs_url=logs_url,
+        guide_url=guide_url,
+        opname_editor_url=opname_editor_url,
+        sla_excel_url=settings.EXCEL_SHARE_LINK or "#",
+        opname_excel_url=opname_excel_link,
+        opname_cycle_label=opname_cycle_label,
+        stats={
+            "cycle_key": active_cycle,
+            "pending_count": pending_count,
+            "roster_done": roster_done,
+            "roster_total": len(OFFICIAL_VENDOR_ROSTER),
+            "sla_today_count": sla_today_count,
+        },
+    )
     return HTMLResponse(content=html_content)
+
 
 @app.get("/guide", response_class=HTMLResponse)
 def get_guide(request: Request):
-    # Retrieve current host dynamically to construct the back link and WAHA link
     host = request.headers.get("host", "")
     if "astrainfrasolutions.id" in host:
         waha_dash_link = "https://waha.astrainfrasolutions.id"
     else:
         ip_only = host.split(":")[0] if host else "129.225.9.167"
         waha_dash_link = f"http://{ip_only}:3000"
-        
-    html_content = f"""
-    <!DOCTYPE html>
-    <html lang="id">
-    <head>
-        <meta charset="UTF-8">
-        <meta name="viewport" content="width=device-width, initial-scale=1.0">
-        <title>VISTA Bot Guide &amp; FAQ</title>
-        <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@300;400;600;700&display=swap" rel="stylesheet">
-        <style>
-            * {{
-                box-sizing: border-box;
-                margin: 0;
-                padding: 0;
-            }}
-            body {{
-                font-family: 'Plus Jakarta Sans', sans-serif;
-                background: linear-gradient(135deg, #0f172a 0%, #1e1b4b 100%);
-                color: #f8fafc;
-                min-height: 100vh;
-                padding: 40px 20px;
-                display: flex;
-                flex-direction: column;
-                align-items: center;
-            }}
-            .container {{
-                width: 100%;
-                max-width: 900px;
-                background: rgba(30, 41, 59, 0.5);
-                backdrop-filter: blur(16px);
-                border: 1px solid rgba(255, 255, 255, 0.08);
-                border-radius: 24px;
-                padding: 40px;
-                box-shadow: 0 20px 40px rgba(0, 0, 0, 0.3);
-            }}
-            header {{
-                margin-bottom: 35px;
-                border-bottom: 1px solid rgba(255, 255, 255, 0.08);
-                padding-bottom: 25px;
-            }}
-            .back-btn {{
-                display: inline-flex;
-                align-items: center;
-                color: #38bdf8;
-                text-decoration: none;
-                font-weight: 600;
-                font-size: 0.95rem;
-                margin-bottom: 20px;
-                transition: opacity 0.2s ease;
-            }}
-            .back-btn:hover {{
-                opacity: 0.8;
-            }}
-            h1 {{
-                font-size: 2.3rem;
-                font-weight: 700;
-                background: linear-gradient(to right, #38bdf8, #818cf8);
-                -webkit-background-clip: text;
-                -webkit-text-fill-color: transparent;
-                margin-bottom: 8px;
-            }}
-            .subtitle {{
-                color: #94a3b8;
-                font-size: 1.05rem;
-            }}
-            .section {{
-                margin-bottom: 35px;
-            }}
-            h2 {{
-                font-size: 1.5rem;
-                font-weight: 600;
-                color: #e2e8f0;
-                margin-bottom: 15px;
-                display: flex;
-                align-items: center;
-                border-bottom: 1px solid rgba(255, 255, 255, 0.05);
-                padding-bottom: 8px;
-            }}
-            h3 {{
-                font-size: 1.15rem;
-                font-weight: 600;
-                color: #f1f5f9;
-                margin: 20px 0 10px 0;
-            }}
-            p {{
-                color: #94a3b8;
-                font-size: 0.98rem;
-                line-height: 1.6;
-                margin-bottom: 12px;
-            }}
-            ul, ol {{
-                margin-left: 25px;
-                margin-bottom: 15px;
-                color: #94a3b8;
-                font-size: 0.98rem;
-                line-height: 1.6;
-            }}
-            li {{
-                margin-bottom: 8px;
-            }}
-            code {{
-                font-family: monospace;
-                background: rgba(15, 23, 42, 0.6);
-                color: #f43f5e;
-                padding: 2px 6px;
-                border-radius: 6px;
-                font-size: 0.9rem;
-                border: 1px solid rgba(255, 255, 255, 0.05);
-            }}
-            pre {{
-                background: rgba(15, 23, 42, 0.8);
-                border: 1px solid rgba(255, 255, 255, 0.06);
-                border-radius: 12px;
-                padding: 16px;
-                margin: 15px 0;
-                overflow-x: auto;
-            }}
-            pre code {{
-                background: none;
-                border: none;
-                color: #38bdf8;
-                padding: 0;
-                font-size: 0.9rem;
-            }}
-            footer {{
-                text-align: center;
-                color: #64748b;
-                font-size: 0.85rem;
-                margin-top: 30px;
-                border-top: 1px solid rgba(255, 255, 255, 0.08);
-                padding-top: 25px;
-            }}
-            .note {{
-                background: rgba(56, 189, 248, 0.05);
-                border-left: 4px solid #38bdf8;
-                padding: 15px;
-                border-radius: 4px 12px 12px 4px;
-                margin: 20px 0;
-            }}
-            .note p {{
-                margin-bottom: 0;
-                color: #e2e8f0;
-            }}
-        </style>
-    </head>
-    <body>
-        <div class="container">
-            <header>
-                <a href="/" class="back-btn">&larr; Kembali ke Konsol Utama</a>
-                <h1>Panduan Penggunaan &amp; FAQ</h1>
-                <p class="subtitle">Bantuan operasional, perintah penting, dan panduan troubleshooting sistem VISTA.</p>
-            </header>
-
-            <!-- Section 1 -->
-            <div class="section">
-                <h2>📱 Operasional Akun WhatsApp</h2>
-                <h3>Cara Mengganti Nomor WhatsApp yang Terhubung</h3>
-                <p>Jika Anda ingin mengganti nomor WhatsApp bot dengan nomor baru, ikuti prosedur aman berikut:</p>
-                <ol>
-                    <li><strong>Log out nomor lama:</strong> Di HP lama Anda, buka WhatsApp &rarr; <strong>Perangkat Tertaut (Linked Devices)</strong> &rarr; Pilih sesi WAHA &rarr; Klik <strong>Keluar (Log out)</strong>. (Atau gunakan tombol Logout di <a href="{waha_dash_link}" target="_blank" style="color: #38bdf8; text-decoration: none; font-weight: 600;">WAHA Dashboard</a>).</li>
-                    <li><strong>Stop containers di VPS:</strong> Masuk ke SSH server, masuk ke folder <code>AIS-VISTA</code>, dan matikan layanannya:
-                        <pre><code>docker-compose -f docker-compose.prod.yml down</code></pre>
-                    </li>
-                    <li><strong>Hapus file sesi lama:</strong> Hapus folder token lama untuk menghindari konflik data:
-                        <pre><code>rm -rf waha_sessions/*</code></pre>
-                    </li>
-                    <li><strong>Nyalakan kembali:</strong>
-                        <pre><code>docker-compose -f docker-compose.prod.yml up -d</code></pre>
-                    </li>
-                    <li><strong>Scan QR Code baru:</strong> Tunggu 10 detik agar engine GOWS inisialisasi, lalu buka Telegram bot Anda dan ketik <code>/qr</code>. Scan gambar QR yang dikirim bot menggunakan HP baru Anda.</li>
-                </ol>
-            </div>
-
-            <!-- Section 2 -->
-            <div class="section">
-                <h2>🛠️ Troubleshooting &amp; Solusi Error</h2>
-                
-                <h3>1. Error: <code>sqlite3.OperationalError: unable to open database file</code></h3>
-                <p><strong>Penyebab:</strong> Docker secara otomatis membuat <code>processed_messages.db</code> sebagai folder kosong karena filenya belum ada di VPS saat pertama kali dijalankan.</p>
-                <p><strong>Solusi:</strong> Hapus folder palsu tersebut dan buat sebagai file kosong:</p>
-                <pre><code>docker-compose -f docker-compose.prod.yml down
-rm -rf processed_messages.db
-touch processed_messages.db
-docker-compose -f docker-compose.prod.yml up -d</code></pre>
-
-                <h3>2. Error: <code>KeyError: 'ContainerConfig'</code></h3>
-                <p><strong>Penyebab:</strong> Program <code>docker-compose</code> versi lama mengalami bug saat mencoba menimpa container yang sedang berjalan.</p>
-                <p><strong>Solusi:</strong> Hapus container yang lama terlebih dahulu secara manual, baru nyalakan kembali:</p>
-                <pre><code>docker rm -f $(docker ps -aq --filter name=waha) $(docker ps -aq --filter name=vista_bot)
-docker-compose -f docker-compose.prod.yml up -d</code></pre>
-
-                <h3>3. Error: <code>Unprotected Private Key File / Bad permissions</code></h3>
-                <p><strong>Penyebab:</strong> SSH client di Windows mendeteksi file key <code>.key</code> Anda dapat diakses oleh akun user Windows lain dan menolak untuk membukanya.</p>
-                <p><strong>Solusi (Gunakan Git Bash):</strong> Copy file key ke folder virtual <code>/tmp</code> di Git Bash yang secara otomatis mengunci izin akses file:</p>
-                <pre><code>cp "/d/Users/muhammad.najih/Documents/AIS-VISTA/ssh-key-2026-07-22.key" /tmp/oracle.key
-chmod 600 /tmp/oracle.key
-ssh -o ServerAliveInterval=60 -i /tmp/oracle.key ubuntu@129.225.9.167</code></pre>
-            </div>
-
-            <!-- Section 3 -->
-            <div class="section">
-                <h2>📋 Perintah Penting (Cheat Sheet)</h2>
-                <p>Gunakan perintah-perintah berikut langsung di folder <code>~/AIS-VISTA</code> pada terminal VPS Anda:</p>
-                
-                <h3>Memantau Log (Real-time)</h3>
-                <ul>
-                    <li>Melihat log Bot Python: <code>docker logs -f vista_bot</code></li>
-                    <li>Melihat log WAHA WhatsApp: <code>docker logs -f waha</code></li>
-                </ul>
-                <div class="note">
-                    <p>💡 <strong>Tips:</strong> Tekan tombol keyboard <code>Ctrl + C</code> untuk keluar dari tampilan log tanpa mematikan bot.</p>
-                </div>
-
-                <h3>Melihat Status Kontainer</h3>
-                <ul>
-                    <li>Melihat semua kontainer (termasuk yang mati): <code>docker ps -a</code></li>
-                    <li>Melihat hanya kontainer yang aktif: <code>docker ps</code></li>
-                </ul>
-
-                <h3>Mengupdate Kode ke Versi Terbaru</h3>
-                <p>Pilih file compose yang sesuai dengan arsitektur server Anda:</p>
-                <pre><code>git pull
-docker rm -f $(docker ps -aq --filter name=waha) $(docker ps -aq --filter name=vista_bot)
-
-# On Office VPS (Intel/AMD):
-docker-compose -f docker-compose.prod.yml up -d --build
-
-# On Oracle Ampere VPS (ARM64):
-docker-compose -f docker-compose.arm.yml up -d --build</code></pre>
-            </div>
-
-            <footer>
-                <p>&copy; 2026 Project AIS-VISTA. Running on Oracle Ampere VPS (ARM64).</p>
-            </footer>
-        </div>
-    </body>
-    </html>
-    """
-    return HTMLResponse(content=html_content)
+    opname_editor_url = f"/opname?token={make_opname_token('DASHBOARD')}"
+    return HTMLResponse(content=render_guide_page_html(waha_dash_link, opname_editor_url))
 
 @app.get("/logs")
 def get_logs(lines: int = 200):
@@ -2657,6 +2391,21 @@ async def webhook_event(request: Request, background_tasks: BackgroundTasks):
     except Exception as e:
         print(f"Error: {e}")
         return {"status": "error"}
+
+app.include_router(
+    create_opname_web_router(
+        {
+            "commit_slots": lambda *a, **kw: _commit_opname_slots(*a, **kw),
+            "delete_slot_rows": lambda *a, **kw: delete_opname_rows_by_id(*a, **kw),
+            "archive_file": lambda *a, **kw: _archive_opname_file_to_onedrive(*a, **kw),
+            "download_onedrive": lambda *a, **kw: download_file_from_onedrive(*a, **kw),
+            "render_pdf_pages": lambda *a, **kw: _render_pdf_pages_to_jpeg(*a, **kw),
+            "send_whatsapp": lambda *a, **kw: send_whatsapp_message(*a, **kw),
+            "format_commit_reply": lambda *a, **kw: _format_commit_reply(*a, **kw),
+            "get_db_url": lambda: settings.DB_URL,
+        }
+    )
+)
 
 if __name__ == "__main__":
     import uvicorn
