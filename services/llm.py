@@ -233,11 +233,12 @@ def extract_opname_form_ocr(
         f"Instructions:\n"
         f"1. Read header fields if visible: aset (PV/GR/SG/WR/RM/LC/CA/DR/FE), wilayah (W1/W2) and vendor from top header box or rows, minggu (M1/M2/M3/M4/M5).\n"
         f"2. Read every non-empty row from the opname table. IGNORE completely empty blank rows. If Tanggal, Minggu, Kode Temuan, or STA/Jalur/Lajur are left blank on subsequent rows at the same location ('ditto'), carry forward the values from the row above.\n"
-        f"3. CRITICAL: If a number in `Vol. Vendor` is crossed out and replaced by a handwritten number in `Vol. Opname` (or margin note), extract BOTH `vol_vendor` and the handwritten `vol_opname`, and set `handwritten_edited: true`.\n"
-        f"4. Map `raw_item` strictly using the closest exact keyword or item_key from the BOQ menu below when available.\n"
-        f"5. Return valid JSON ONLY (no markdown fences, no commentary):\n"
+        f"3. CRITICAL: If any printed dimension (`P`, `L`, `T`, or `Jml`) is crossed out and replaced by a handwritten number, put the REVISED handwritten number in `p`, `l`, `t`, or `jml`, and set `dimension_edited: true` and `handwritten_edited: true`.\n"
+        f"4. CRITICAL: Leave `vol_opname` as `null` when the `Vol. Opname` column is blank on paper (do NOT copy `vol_vendor` and do NOT mentally multiply dimensions into `vol_opname`). If a handwritten number is explicitly written in `Vol. Opname` (or crossed out in `Vol. Vendor` and replaced), extract both `vol_vendor` and handwritten `vol_opname`, and set `handwritten_edited: true`.\n"
+        f"5. Map `raw_item` strictly using the closest exact keyword or item_key from the BOQ menu below when available.\n"
+        f"6. Return valid JSON ONLY (no markdown fences, no commentary):\n"
         f'{{"aset": "", "vendor": "", "wilayah": "", "minggu": "", "rows": ['
-        f'{{"tanggal": "YYYY-MM-DD", "kode_temuan": "", "wilayah": "", "vendor": "", "lokasi": "", "jalur": "", "lajur": "", "raw_item": "", "p": null, "l": null, "t": null, "jml": null, "vol_vendor": null, "vol_opname": null, "keterangan": "", "handwritten_edited": false}}'
+        f'{{"tanggal": "YYYY-MM-DD", "kode_temuan": "", "wilayah": "", "vendor": "", "lokasi": "", "jalur": "", "lajur": "", "raw_item": "", "p": null, "l": null, "t": null, "jml": null, "vol_vendor": null, "vol_opname": null, "keterangan": "", "dimension_edited": false, "handwritten_edited": false}}'
         f"]}}\n\n"
         f"OFFICIAL BOQ MENU:\n{boq_menu_text}"
     )

@@ -584,6 +584,133 @@ class OpnameWorkflowTests(unittest.TestCase):
         mock_up.assert_not_called()
         mock_send.assert_not_called()
 
+    @patch("main.upload_file_to_onedrive", return_value=("OD_ITM_SCAN2", "https://1drv.ms/u/ARC_SCAN2"))
+    @patch("main.ensure_monthly_opname_workbook", return_value=("DRV1", "ITM_NOV", "https://1drv.ms/x/NOV"))
+    @patch("main.extract_opname_form_ocr")
+    @patch("main.send_whatsapp_document")
+    @patch("main.send_whatsapp_message")
+    def test_scan_opname_auto_recalculates_from_handwritten_dimensions(
+        self,
+        mock_send,
+        mock_send_doc,
+        mock_ocr,
+        mock_ensure,
+        mock_upload_arc,
+    ):
+        mock_ocr.return_value = (
+            {
+                "aset": "PV",
+                "vendor": "MIJ",
+                "wilayah": "W1",
+                "minggu": "M2",
+                "rows": [
+                    {
+                        "tanggal": "2026-11-11",
+                        "kode_temuan": "111126PV001",
+                        "wilayah": "W1",
+                        "vendor": "MIJ",
+                        "lokasi": "KM 45+200",
+                        "jalur": "A",
+                        "lajur": "L1",
+                        "raw_item": "Permanen",
+                        "p": 15.0,
+                        "l": 2.0,
+                        "t": 0.05,
+                        "jml": None,
+                        "vol_vendor": 2.5,
+                        "vol_opname": None,
+                        "dimension_edited": True,
+                        "handwritten_edited": True,
+                    },
+                    {
+                        "tanggal": "2026-11-11",
+                        "kode_temuan": "111126PV002",
+                        "wilayah": "W1",
+                        "vendor": "MIJ",
+                        "lokasi": "KM 45+300",
+                        "jalur": "A",
+                        "lajur": "L1",
+                        "raw_item": "Permanen",
+                        "p": 15.0,
+                        "l": 2.0,
+                        "t": 0.05,
+                        "jml": None,
+                        "vol_vendor": 2.5,
+                        "vol_opname": 1.4,
+                        "dimension_edited": True,
+                        "handwritten_edited": True,
+                    },
+                    {
+                        "tanggal": "2026-11-11",
+                        "kode_temuan": "111126PV003",
+                        "wilayah": "W1",
+                        "vendor": "MIJ",
+                        "lokasi": "KM 45+400",
+                        "jalur": "A",
+                        "lajur": "L1",
+                        "raw_item": "Permanen",
+                        "p": 25.0,
+                        "l": 2.0,
+                        "t": None,
+                        "jml": None,
+                        "vol_vendor": 2.5,
+                        "vol_opname": None,
+                        "dimension_edited": False,
+                        "handwritten_edited": False,
+                    },
+                    {
+                        "tanggal": "2026-11-11",
+                        "kode_temuan": "111126PV004",
+                        "wilayah": "W1",
+                        "vendor": "MIJ",
+                        "lokasi": "KM 45+400",
+                        "jalur": "A",
+                        "lajur": "L1",
+                        "raw_item": "Hotmix",
+                        "p": 10.0,
+                        "l": 2.0,
+                        "t": 0.05,
+                        "jml": None,
+                        "vol_vendor": 2.3,
+                        "vol_opname": None,
+                        "dimension_edited": False,
+                        "handwritten_edited": False,
+                    },
+                ],
+            },
+            "",
+        )
+        pdf_bytes = _make_sample_pdf_bytes()
+        with patch("main._extract_image_bytes_from_message", return_value=pdf_bytes):
+            main.process_message(
+                {
+                    "id": {"_serialized": "false_628111@c.us_SCAN_DIM1"},
+                    "from": "628111@c.us",
+                    "hasMedia": True,
+                    "body": "Scan Opname PV M2",
+                    "media": {"filename": "opname_dim_edit.pdf", "mimetype": "application/pdf"},
+                    "_session": "default",
+                }
+            )
+
+        preview = mock_send.call_args[0][1]
+        self.assertIn("1.5 m3", preview)
+        self.assertIn("(auto P×L×T)", preview)
+        self.assertIn("1.4 m3", preview)
+        self.assertIn("2.5 m3", preview)
+        self.assertIn("2.3 Ton", preview)
+
+        returned_xlsx = mock_send_doc.call_args[0][1]
+        parsed_back = parse_standard_opname_xlsx(returned_xlsx, filename=mock_send_doc.call_args[0][2])
+        self.assertTrue(parsed_back.is_standard_form)
+        self.assertEqual(parsed_back.errors, [])
+        entries = parsed_back.slots[0].entries
+        self.assertEqual(len(entries), 4)
+        self.assertAlmostEqual(entries[0]["volume"], 1.5)
+        self.assertAlmostEqual(entries[1]["volume"], 1.4)
+        self.assertAlmostEqual(entries[2]["volume"], 2.5)
+        self.assertAlmostEqual(entries[3]["volume"], 2.3)
+
 
 if __name__ == "__main__":
     unittest.main()

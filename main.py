@@ -40,7 +40,10 @@ from services.opname_xlsx import (
     MONTH_INDEX_TO_ABBR,
     XlsxSlotBatch,
     build_prefilled_standard_xlsx,
+    compute_geom_volume,
+    compute_strict_dim_volume,
     parse_standard_opname_xlsx,
+    to_float_num,
 )
 from services.whatsapp import send_whatsapp_document, send_whatsapp_message
 from services.microsoft import (
@@ -1721,13 +1724,38 @@ def process_opname_scan_message(
             errors.append(f"Baris {i_r}: {b_err}")
             continue
 
-        vol_opn = r_obj.get("vol_opname")
-        vol_vnd = r_obj.get("vol_vendor")
-        vol_final = vol_opn if vol_opn is not None else vol_vnd
-        try:
-            vol_num = float(vol_final) if vol_final is not None else 0.0
-        except (TypeError, ValueError):
-            vol_num = 0.0
+        p_val = to_float_num(r_obj.get("p"))
+        l_val = to_float_num(r_obj.get("l"))
+        t_val = to_float_num(r_obj.get("t"))
+        j_val = to_float_num(r_obj.get("jml"))
+        vol_opn = to_float_num(r_obj.get("vol_opname"))
+        vol_vnd = to_float_num(r_obj.get("vol_vendor"))
+        dim_edited = bool(r_obj.get("dimension_edited"))
+        hw_edited = bool(r_obj.get("handwritten_edited"))
+        strict_dim_vol = compute_strict_dim_volume(
+            boq_item.satuan,
+            p_val,
+            l_val,
+            t_val,
+            j_val,
+            allow_countable_jml=dim_edited,
+        )
+
+        auto_recalc_dim = False
+        is_edited = hw_edited or dim_edited
+        if vol_opn is not None:
+            vol_num = vol_opn
+        elif strict_dim_vol is not None and strict_dim_vol > 0 and (
+            dim_edited or hw_edited or vol_vnd is None or abs(strict_dim_vol - vol_vnd) > 0.01
+        ):
+            vol_num = strict_dim_vol
+            auto_recalc_dim = True
+            is_edited = True
+        elif vol_vnd is not None:
+            vol_num = vol_vnd
+        else:
+            vol_num = compute_geom_volume(boq_item.satuan, p_val, l_val, t_val, j_val) or 0.0
+
         if vol_num <= 0:
             errors.append(f"Baris {i_r}: Volume '{boq_item.keyword}' tidak terbaca / <= 0.")
             continue
@@ -1738,7 +1766,7 @@ def process_opname_scan_message(
             warnings.append(r_warn)
 
         jalur = " ".join(p for p in (str(r_obj.get("jalur") or "").strip(), str(r_obj.get("lajur") or "").strip()) if p) or "-"
-        edited_mark = " ✏️" if r_obj.get("handwritten_edited") else ""
+        edited_mark = " ✏️ (auto P×L×T)" if auto_recalc_dim else (" ✏️" if is_edited else "")
         preview_lines.append(
             f"{i_r}. *{boq_item.keyword}* (`{boq_item.item_key}`) | {loc or wil} | *{vol_num:g} {boq_item.satuan}*{edited_mark}"
         )
@@ -1756,10 +1784,10 @@ def process_opname_scan_message(
                 "keyword": boq_item.keyword,
                 "uraian": boq_item.uraian,
                 "satuan": boq_item.satuan,
-                "p": r_obj.get("p"),
-                "l": r_obj.get("l"),
-                "t": r_obj.get("t"),
-                "jml": r_obj.get("jml"),
+                "p": p_val,
+                "l": l_val,
+                "t": t_val,
+                "jml": j_val,
                 "vol_vendor": vol_vnd,
                 "volume": round(vol_num, 4),
                 "material_status": "",

@@ -33,6 +33,7 @@ from services.opname_catalog import (
     resolve_boq_item,
     resolve_wilayah,
 )
+from services.opname_roster import get_allowed_vendors_for_asset
 
 MONTH_ABBRS = ("JAN", "FEB", "MAR", "APR", "MEI", "JUN", "JUL", "AGT", "SEP", "OKT", "NOV", "DES")
 MONTH_INDEX_TO_ABBR = {idx: abbr for idx, abbr in enumerate(MONTH_ABBRS, start=1)}
@@ -81,7 +82,7 @@ def _norm_hdr(val: Any) -> str:
     return re.sub(r"[^a-z0-9]+", " ", str(val or "").lower()).strip()
 
 
-def _to_float_num(val: Any) -> float | None:
+def to_float_num(val: Any) -> float | None:
     if val is None or isinstance(val, bool):
         return None
     if isinstance(val, (int, float)):
@@ -246,7 +247,7 @@ def _col_by_aliases(hmap: dict[str, int], *aliases: str) -> Optional[int]:
     return None
 
 
-def _compute_geom_volume(satuan: str, p: float | None, l: float | None, t: float | None, jml: float | None) -> float | None:
+def compute_geom_volume(satuan: str, p: float | None, l: float | None, t: float | None, jml: float | None) -> float | None:
     mul = jml if (jml is not None and jml > 0) else 1.0
     sat_l = (satuan or "").lower().strip()
     if p is not None and sat_l in ("m", "m'"):
@@ -259,6 +260,35 @@ def _compute_geom_volume(satuan: str, p: float | None, l: float | None, t: float
         return round(jml, 3)
     if p is not None:
         return round(p, 3)
+    return None
+
+
+def compute_strict_dim_volume(
+    satuan: str,
+    p: float | None,
+    l: float | None,
+    t: float | None,
+    jml: float | None,
+    allow_countable_jml: bool = False,
+) -> float | None:
+    """Compute volume strictly when all required dimensions for the unit are present."""
+    mul = jml if (jml is not None and jml > 0) else 1.0
+    sat_l = (satuan or "").lower().strip()
+    if sat_l in ("m", "m'"):
+        return round(p * mul, 3) if p is not None else None
+    if sat_l == "m2":
+        return round(p * l * mul, 3) if (p is not None and l is not None) else None
+    if sat_l == "m3":
+        return round(p * l * t * mul, 3) if (p is not None and l is not None and t is not None) else None
+    if (
+        allow_countable_jml
+        and jml is not None
+        and p is None
+        and l is None
+        and t is None
+        and sat_l not in ("ton", "kg", "liter", "ltr", "ls")
+    ):
+        return round(jml, 3)
     return None
 
 
@@ -355,18 +385,18 @@ def parse_standard_opname_xlsx(
             raw_kode = ws_v.cell(r, c_kode).value if c_kode else None
             raw_item = str(raw_kw or raw_kode or "").strip()
 
-            p_val = _to_float_num(ws_v.cell(r, c_p).value) if c_p else None
-            l_val = _to_float_num(ws_v.cell(r, c_l).value) if c_l else None
-            t_val = _to_float_num(ws_v.cell(r, c_t).value) if c_t else None
-            j_val = _to_float_num(ws_v.cell(r, c_jml).value) if c_jml else None
-            ov_val = _to_float_num(ws_v.cell(r, c_ov).value) if c_ov else None
-            vv_val = _to_float_num(ws_v.cell(r, c_vv).value) if c_vv else None
+            p_val = to_float_num(ws_v.cell(r, c_p).value) if c_p else None
+            l_val = to_float_num(ws_v.cell(r, c_l).value) if c_l else None
+            t_val = to_float_num(ws_v.cell(r, c_t).value) if c_t else None
+            j_val = to_float_num(ws_v.cell(r, c_jml).value) if c_jml else None
+            ov_val = to_float_num(ws_v.cell(r, c_ov).value) if c_ov else None
+            vv_val = to_float_num(ws_v.cell(r, c_vv).value) if c_vv else None
 
             # Also check uncached raw numeric values when file was saved by script/tool without Excel cache
             if ov_val is None and c_ov:
-                ov_val = _to_float_num(ws_f.cell(r, c_ov).value)
+                ov_val = to_float_num(ws_f.cell(r, c_ov).value)
             if vv_val is None and c_vv:
-                vv_val = _to_float_num(ws_f.cell(r, c_vv).value)
+                vv_val = to_float_num(ws_f.cell(r, c_vv).value)
 
             # Skip blank starter/trailing rows
             if not raw_item and p_val is None and j_val is None and ov_val is None and vv_val is None:
@@ -448,7 +478,7 @@ def parse_standard_opname_xlsx(
             elif vv_val is not None:
                 vol = vv_val
             else:
-                vol = _compute_geom_volume(boq_item.satuan, p_val, l_val, t_val, j_val)
+                vol = compute_geom_volume(boq_item.satuan, p_val, l_val, t_val, j_val)
 
             if vol is None or vol <= 0:
                 errors.append(f"[{sname} Baris {r}] Volume untuk '{boq_item.keyword}' kosong atau <= 0.")
@@ -564,7 +594,7 @@ def build_prefilled_standard_xlsx(
     mon_abbr = MONTH_INDEX_TO_ABBR.get(cycle_month, "NOV")
     mon_full = MONTH_FULL_ID.get(mon_abbr, mon_abbr)
     boq_items = _items_for_asset_boq(canon_aset)
-    vendors = ALLOWED_VENDORS_BY_ASSET.get(canon_aset, ("MMS",))
+    vendors = get_allowed_vendors_for_asset(canon_aset) or list(ALLOWED_VENDORS_BY_ASSET.get(canon_aset, ("MMS",)))
 
     wb = openpyxl.Workbook()
     ws = wb.active
@@ -578,9 +608,9 @@ def build_prefilled_standard_xlsx(
     cols = [
         ("No.", 4.2), ("Tanggal", 11.2), ("Minggu", 7.2), ("Kode Temuan", 13.5),
         ("STA / KM", 12.0), ("Jalur", 5.5), ("Lajur", 5.5), ("KODE", 8.5),
-        ("Item / Keyword RAB", 24.0), ("P", 6.0), ("L", 6.0), ("T", 6.0),
-        ("Jml", 6.5), ("Vol. Vendor", 10.5), ("Vol. Opname", 10.5), ("Satuan", 13.5),
-        ("Baik", 5.5), ("Tdk Baik", 6.8), ("Keterangan", 22.0),
+        ("Item / Keyword RAB", 22.5), ("P", 7.5), ("L", 7.5), ("T", 7.5),
+        ("Jml", 7.5), ("Vol. Vendor", 11.5), ("Vol. Opname", 12.5), ("Satuan", 13.5),
+        ("Baik", 5.5), ("Tdk Baik", 6.8), ("Keterangan", 19.0),
     ]
     last_col_idx = 1 + len(cols)
     last_col_l = get_column_letter(last_col_idx)
@@ -622,6 +652,7 @@ def build_prefilled_standard_xlsx(
     row_count = max(5, len(entries))
     end_row = 10 + row_count
     for r in range(11, end_row + 1):
+        ws.row_dimensions[r].height = 25.0
         for c in range(2, last_col_idx + 1):
             cell = ws.cell(r, c)
             cell.border = border
@@ -637,7 +668,6 @@ def build_prefilled_standard_xlsx(
             f'IF(AND(COUNT(K{r}:M{r})=3,Q{r}="m3"),ROUND(K{r}*L{r}*M{r}*IF(N{r}="",1,N{r}),3),'
             f'IF(COUNT(N{r})>0,N{r},"")))))',
         )
-        ws.cell(r, 16, f'=IF(O{r}="","",O{r})')
 
     for idx_e, ent in enumerate(entries, start=11):
         dt_val = ent.get("tanggal")
