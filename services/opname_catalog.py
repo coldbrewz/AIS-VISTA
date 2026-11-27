@@ -145,42 +145,56 @@ W1_MIN_METERS = 26035
 W1_MAX_EXCLUSIVE_METERS = 60000
 W2_MAX_METERS = 98200
 
+# Boundary IC at KM 60+000 shared by W1 and W2
+BOUNDARY_IC_AKSES: Dict[str, str] = {
+    "1.4": "Ciujung",
+    "CIUJUNG": "Ciujung",
+}
+
 IC_AKSES_WILAYAH: Dict[str, Tuple[str, str]] = {
-    # pattern -> (canonical_name, wilayah)
+    # W1 (Bitung .. Cikande / KM 26+035 .. KM 60+000)
     "0.1": ("Bitung", "W1"),
     "BITUNG": ("Bitung", "W1"),
     "1.1": ("Cikupa", "W1"),
     "1.10": ("Cikupa", "W1"),
     "1.12": ("Cikupa", "W1"),
     "CIKUPA": ("Cikupa", "W1"),
+    "PASAR KEMIS": ("Pasar Kemis", "W1"),
+    "PS. KEMIS": ("Pasar Kemis", "W1"),
+    "PS.KEMIS": ("Pasar Kemis", "W1"),
+    "PS KEMIS": ("Pasar Kemis", "W1"),
+    "PASKEM": ("Pasar Kemis", "W1"),
     "1.2": ("Balaraja Timur", "W1"),
     "BALTIM": ("Balaraja Timur", "W1"),
     "BALARAJA TIMUR": ("Balaraja Timur", "W1"),
     "1.3": ("Balaraja Barat", "W1"),
     "BALBAR": ("Balaraja Barat", "W1"),
     "BALARAJA BARAT": ("Balaraja Barat", "W1"),
+    "BALARAJA": ("Balaraja", "W1"),
     "1.31": ("Cikande", "W1"),
     "CIKANDE": ("Cikande", "W1"),
-    "1.4": ("Ciujung", "W1"),
-    "CIUJUNG": ("Ciujung", "W1"),
+    "GORDA": ("Cikande", "W1"),
     "RA 43": ("Rest Area KM 43", "W1"),
     "RA43": ("Rest Area KM 43", "W1"),
     "REST AREA 43": ("Rest Area KM 43", "W1"),
     "RA 45": ("Rest Area KM 45", "W1"),
     "RA45": ("Rest Area KM 45", "W1"),
     "REST AREA 45": ("Rest Area KM 45", "W1"),
+    # W2 (Serang Timur .. Merak / KM 60+000 .. KM 98+200)
     "2.5": ("Serang Timur", "W2"),
     "SERTIM": ("Serang Timur", "W2"),
     "SERANG TIMUR": ("Serang Timur", "W2"),
     "2.6": ("Serang Barat", "W2"),
     "SERBAR": ("Serang Barat", "W2"),
     "SERANG BARAT": ("Serang Barat", "W2"),
+    "SERANG": ("Serang", "W2"),
     "2.7": ("Cilegon Timur", "W2"),
     "CILTIM": ("Cilegon Timur", "W2"),
     "CILEGON TIMUR": ("Cilegon Timur", "W2"),
     "2.8": ("Cilegon Barat", "W2"),
     "CILBAR": ("Cilegon Barat", "W2"),
     "CILEGON BARAT": ("Cilegon Barat", "W2"),
+    "CILEGON": ("Cilegon", "W2"),
     "2.9": ("Merak", "W2"),
     "MERAK": ("Merak", "W2"),
     "PETAK PAPAT": ("Petak Papat", "W2"),
@@ -280,7 +294,12 @@ def resolve_wilayah(lokasi: str) -> Tuple[bool, Optional[str], Optional[str], st
             )
         return True, wilayah, None, ""
 
-    # 2. Try official IC / Akses names and codes (longer patterns first to match 1.31 before 1.3, 1.10 before 1.1)
+    # 2. Boundary IC at KM 60 (Ciujung) is valid for both W1 and W2
+    for key in sorted(BOUNDARY_IC_AKSES.keys(), key=len, reverse=True):
+        if re.search(rf"(?<![0-9A-Z]){re.escape(key)}(?![0-9A-Z])", upper_loc):
+            return True, (explicit_hint or "W1"), BOUNDARY_IC_AKSES[key], ""
+
+    # 3. Try official IC / Akses names and codes (longer patterns first to match 1.31 before 1.3, 1.10 before 1.1)
     for key in sorted(IC_AKSES_WILAYAH.keys(), key=len, reverse=True):
         if re.search(rf"(?<![0-9A-Z]){re.escape(key)}(?![0-9A-Z])", upper_loc):
             canon_name, wilayah = IC_AKSES_WILAYAH[key]
@@ -293,7 +312,11 @@ def resolve_wilayah(lokasi: str) -> Tuple[bool, Optional[str], Optional[str], st
                 )
             return True, wilayah, canon_name, ""
 
-    # 3. No KM and no IC/Akses match
+    # 4. Informal site labels or minor OCR typos fallback to explicit form/header Wilayah when present
+    if explicit_hint:
+        return True, explicit_hint, None, ""
+
+    # 5. No KM, no IC/Akses match, and no explicit Wilayah header
     return (
         False,
         None,
@@ -874,14 +897,20 @@ def resolve_rumput_segment(
     loc_l = (lokasi or "").lower()
 
     # Check IC/Akses location first
+    ic_canon_pairs = sorted(
+        [(k, cn) for k, cn in BOUNDARY_IC_AKSES.items()]
+        + [(k, cn) for k, (cn, _) in IC_AKSES_WILAYAH.items()],
+        key=lambda kv: len(kv[0]),
+        reverse=True,
+    )
     matched_loc_code: Optional[str] = None
-    for _, (canon_name, _) in sorted(IC_AKSES_WILAYAH.items(), key=lambda kv: len(kv[0]), reverse=True):
+    for _, canon_name in ic_canon_pairs:
         if canon_name.lower() in loc_l or canon_name.lower() in hint_l:
             matched_loc_code = _LOC_KEY_CODE_MAP.get(canon_name)
             if matched_loc_code:
                 break
     if not matched_loc_code:
-        for k, (canon_name, _) in sorted(IC_AKSES_WILAYAH.items(), key=lambda kv: len(kv[0]), reverse=True):
+        for k, canon_name in ic_canon_pairs:
             if re.search(rf"(?<![0-9A-Z]){re.escape(k)}(?![0-9A-Z])", lokasi.upper()):
                 matched_loc_code = _LOC_KEY_CODE_MAP.get(canon_name)
                 if matched_loc_code:

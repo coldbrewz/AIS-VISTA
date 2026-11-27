@@ -40,10 +40,15 @@ class OpnameCatalogTests(unittest.TestCase):
             "0.1 BITUNG",
             "1.1 CIKUPA 1",
             "1.10 CIKUPA 2",
+            "Pasar Kemis",
+            "Ps. Kemis",
+            "Ps Kemis",
             "1.2 BALTIM",
             "1.3 BALBAR",
             "1.31 CIKANDE",
+            "Gorda Ramp Akses",
             "1.4 CIUJUNG",
+            "STA Ciujung Ramp Off",
             "RA 43",
         ]
         expected_w2 = [
@@ -64,6 +69,17 @@ class OpnameCatalogTests(unittest.TestCase):
             self.assertTrue(ok, f"Failed for {loc}: {err}")
             self.assertEqual(wil, "W2", loc)
         self.assertGreater(len(IC_AKSES_WILAYAH), 20)
+
+        # Ciujung is at KM 60 boundary and accepts either W1 or W2 explicitly
+        self.assertEqual(resolve_wilayah("STA Ciujung Ramp Off W1")[:2], (True, "W1"))
+        self.assertEqual(resolve_wilayah("STA Ciujung Ramp Off W2")[:2], (True, "W2"))
+
+        # Informal labels / minor OCR typos fall back to explicit header Wilayah, while real contradictions reject
+        self.assertEqual(resolve_wilayah("STA Clujung Ramp Off W1")[:2], (True, "W1"))
+        self.assertFalse(resolve_wilayah("STA Clujung Ramp Off")[0])
+        self.assertFalse(resolve_wilayah("Pasar Kemis W2")[0])
+        self.assertFalse(resolve_wilayah("Merak W1")[0])
+        self.assertFalse(resolve_wilayah("KM 72+500 W1")[0])
 
     def test_strict_vendor_validation_never_defaults(self):
         ok_empty, v_empty, _ = normalize_vendor("", "PV")

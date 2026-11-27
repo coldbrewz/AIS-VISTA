@@ -711,6 +711,65 @@ class OpnameWorkflowTests(unittest.TestCase):
         self.assertAlmostEqual(entries[2]["volume"], 2.5)
         self.assertAlmostEqual(entries[3]["volume"], 2.3)
 
+    @patch("main.upload_file_to_onedrive", return_value=("OD_ITM_TYPO", "https://1drv.ms/u/ARC_TYPO"))
+    @patch("main.ensure_monthly_opname_workbook", return_value=("DRV1", "ITM_AGT", "https://1drv.ms/x/AGT"))
+    @patch("main.extract_opname_form_ocr")
+    @patch("main.send_whatsapp_document")
+    @patch("main.send_whatsapp_message")
+    def test_scan_opname_warns_instead_of_rejecting_unknown_location_when_header_wilayah_present(
+        self,
+        mock_send,
+        mock_send_doc,
+        mock_ocr,
+        mock_ensure,
+        mock_upload_arc,
+    ):
+        mock_ocr.return_value = (
+            {
+                "aset": "PV",
+                "vendor": "MIJ",
+                "wilayah": "W1",
+                "minggu": "M3",
+                "rows": [
+                    {
+                        "tanggal": "2026-08-14",
+                        "kode_temuan": "-",
+                        "wilayah": "",
+                        "vendor": "MIJ",
+                        "lokasi": "STA Clujung Ramp Off",
+                        "jalur": "",
+                        "lajur": "",
+                        "raw_item": "Salob",
+                        "p": 0.5,
+                        "l": 0.3,
+                        "t": 0.05,
+                        "jml": None,
+                        "vol_vendor": 0.008,
+                        "vol_opname": None,
+                    }
+                ],
+            },
+            "",
+        )
+        pdf_bytes = _make_sample_pdf_bytes()
+        with patch("main._extract_image_bytes_from_message", return_value=pdf_bytes):
+            main.process_message(
+                {
+                    "id": {"_serialized": "false_628111@c.us_SCAN_LOCWARN"},
+                    "from": "628111@c.us",
+                    "hasMedia": True,
+                    "body": "Scan Opname PV M3",
+                    "media": {"filename": "opname_m3.pdf", "mimetype": "application/pdf"},
+                    "_session": "default",
+                }
+            )
+
+        preview = mock_send.call_args[0][1]
+        self.assertIn("Hasil Scan Opname", preview)
+        self.assertIn("STA Clujung Ramp Off", preview)
+        self.assertIn("memakai Wilayah header W1", preview)
+        mock_send_doc.assert_called_once()
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -1705,11 +1705,27 @@ def process_opname_scan_message(
         loc = str(r_obj.get("lokasi") or "").strip()
         wil = str(r_obj.get("wilayah") or hdr_wil or "").strip().upper()
         if loc:
-            w_ok, loc_w, _, w_err = resolve_wilayah(f"{loc} {wil}".strip() if wil in ("W1", "W2") else loc)
-            if not w_ok or not loc_w:
-                errors.append(f"Baris {i_r}: {w_err}")
-                continue
-            wil = loc_w
+            if wil in ("W1", "W2"):
+                w_ok, loc_w, _, w_err = resolve_wilayah(f"{loc} {wil}")
+                if not w_ok or not loc_w:
+                    errors.append(f"Baris {i_r}: {w_err}")
+                    continue
+                direct_ok, _, _, _ = resolve_wilayah(loc)
+                if not direct_ok:
+                    w_msg = (
+                        f"Baris {i_r}: Lokasi '{loc}' tidak cocok daftar KM/IC, "
+                        f"memakai Wilayah header {loc_w} (periksa di web review)."
+                    )
+                    if w_msg not in warn_seen:
+                        warn_seen.add(w_msg)
+                        warnings.append(w_msg)
+                wil = loc_w
+            else:
+                w_ok, loc_w, _, w_err = resolve_wilayah(loc)
+                if not w_ok or not loc_w:
+                    errors.append(f"Baris {i_r}: {w_err}")
+                    continue
+                wil = loc_w
         if wil not in ("W1", "W2"):
             errors.append(f"Baris {i_r}: Wilayah W1/W2 tidak terbaca.")
             continue
