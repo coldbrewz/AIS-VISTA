@@ -210,13 +210,16 @@ return exactly:
         return None, f"LLM Error: {str(e)}"
 
 
-def _read_chat_completion_content(resp: requests.Response) -> str:
+def _read_chat_completion_content(resp: requests.Response, max_seconds: float | None = None) -> str:
     """Read message text from either an SSE stream or a standard JSON chat completion."""
     hdrs = {str(k).lower(): str(v) for k, v in (getattr(resp, "headers", None) or {}).items()}
     ctype = hdrs.get("content-type", "").lower()
     if "text/event-stream" in ctype:
+        deadline = (time.monotonic() + max_seconds) if max_seconds else None
         parts: list[str] = []
         for raw_line in resp.iter_lines(decode_unicode=True):
+            if deadline is not None and time.monotonic() > deadline:
+                raise TimeoutError(f"OCR SSE stream exceeded {int(max_seconds)}s total limit")
             line = raw_line.decode("utf-8", errors="ignore") if isinstance(raw_line, bytes) else (raw_line or "")
             line = line.strip()
             if not line or not line.startswith("data:"):
@@ -278,7 +281,8 @@ def _verify_handwritten_edits_on_page(
     if not flagged:
         return
 
-    b64_hi = prepare_image_for_llm(img_bytes, max_size=2400, quality=90)
+    b64_hi = prepare_image_for_llm(img_bytes, max_size=1800, quality=84)
+    img2_kb = max(1, (len(b64_hi) * 3) // (4 * 1024))
     verify_prompt = (
         "Inspect ONLY the highlighted rows below on this scanned toll road opname form.\n"
         "A printed number in `P`, `L`, `T`, `Jml`, or `Vol. Vendor` was crossed out or scribbled over with pen ink, "
@@ -307,17 +311,24 @@ def _verify_handwritten_edits_on_page(
     }
     t0 = time.monotonic()
     try:
+        print(
+            f"[Opname OCR] Page {p_idx}/{total_pages} | sending Pass 2 (flagged={len(flagged)}, img={img2_kb}KB)...",
+            flush=True,
+        )
         with requests.post(
             settings.VIKEY_BASE_URL,
             headers=headers,
             json=body,
-            timeout=(15, 90),
+            timeout=(15, 40),
             stream=True,
         ) as resp:
             if resp.status_code != 200:
-                print(f"[Opname OCR] Page {p_idx}/{total_pages} | Pass 2 skipped (HTTP {resp.status_code})")
+                print(
+                    f"[Opname OCR] Page {p_idx}/{total_pages} | Pass 2 skipped (HTTP {resp.status_code})",
+                    flush=True,
+                )
                 return
-            raw_content = _read_chat_completion_content(resp)
+            raw_content = _read_chat_completion_content(resp, max_seconds=45.0)
         elapsed = time.monotonic() - t0
         if not raw_content:
             return
@@ -366,10 +377,11 @@ def _verify_handwritten_edits_on_page(
             applied += 1
 
         print(
-            f"[Opname OCR] Page {p_idx}/{total_pages} | verified {applied} handwritten correction(s) in {elapsed:.1f}s"
+            f"[Opname OCR] Page {p_idx}/{total_pages} | verified {applied} handwritten correction(s) in {elapsed:.1f}s",
+            flush=True,
         )
     except Exception as e:
-        print(f"[Opname OCR] Page {p_idx}/{total_pages} | Pass 2 warning: {e}")
+        print(f"[Opname OCR] Page {p_idx}/{total_pages} | Pass 2 warning: {e}", flush=True)
 
 
 def extract_opname_form_ocr(
@@ -418,7 +430,7 @@ def extract_opname_form_ocr(
     last_err = ""
 
     for p_idx, img_bytes in enumerate(pages, start=1):
-        b64_page = prepare_image_for_llm(img_bytes, max_size=2200, quality=88)
+        b64_page = prepare_image_for_llm(img_bytes, max_size=1600, quality=82)
         img_kb = max(1, (len(b64_page) * 3) // (4 * 1024))
         body = {
             "model": model_name,
@@ -439,22 +451,29 @@ def extract_opname_form_ocr(
         for attempt in range(2):
             t0 = time.monotonic()
             try:
+                print(
+                    f"[Opname OCR] Page {p_idx}/{total_pages} | sending Pass 1 (model={model_name}, img={img_kb}KB, attempt {attempt + 1}/2)...",
+                    flush=True,
+                )
                 with requests.post(
                     settings.VIKEY_BASE_URL,
                     headers=headers,
                     json=body,
-                    timeout=(15, 90),
+                    timeout=(15, 60),
                     stream=True,
                 ) as resp:
                     if resp.status_code in [429, 500, 502, 503, 504] and attempt == 0:
-                        print(f"[Opname OCR] Page {p_idx}/{total_pages} | model={model_name} | HTTP {resp.status_code} retrying...")
+                        print(
+                            f"[Opname OCR] Page {p_idx}/{total_pages} | model={model_name} | HTTP {resp.status_code} retrying...",
+                            flush=True,
+                        )
                         time.sleep(2)
                         continue
                     if resp.status_code != 200:
                         last_err = f"OCR LLM API Error ({resp.status_code}): {resp.text}"
-                        print(f"[Opname OCR] Page {p_idx}/{total_pages} HTTP error: {last_err}")
+                        print(f"[Opname OCR] Page {p_idx}/{total_pages} HTTP error: {last_err}", flush=True)
                         break
-                    raw_content = _read_chat_completion_content(resp)
+                    raw_content = _read_chat_completion_content(resp, max_seconds=90.0)
                 elapsed = time.monotonic() - t0
                 if not raw_content:
                     last_err = f"Page {p_idx}: empty OCR response"
@@ -471,7 +490,8 @@ def extract_opname_form_ocr(
                 page_rows = [r for r in page_rows if isinstance(r, dict)]
                 print(
                     f"[Opname OCR] Page {p_idx}/{total_pages} | model={model_name} | img={img_kb}KB | "
-                    f"{elapsed:.1f}s | rows={len(page_rows)}"
+                    f"{elapsed:.1f}s | rows={len(page_rows)}",
+                    flush=True,
                 )
                 _verify_handwritten_edits_on_page(
                     img_bytes,
@@ -492,7 +512,8 @@ def extract_opname_form_ocr(
                 last_err = f"OCR LLM Error: {e}"
                 print(
                     f"[Opname OCR] Page {p_idx}/{total_pages} failed in {elapsed:.1f}s "
-                    f"(attempt {attempt + 1}/2): {e}"
+                    f"(attempt {attempt + 1}/2): {e}",
+                    flush=True,
                 )
                 if attempt == 0:
                     time.sleep(2)
@@ -500,7 +521,8 @@ def extract_opname_form_ocr(
         if not page_ok and merged["rows"]:
             print(
                 f"[Opname OCR] Warning: Page {p_idx} failed ({last_err}); "
-                f"returning {len(merged['rows'])} row(s) from earlier pages."
+                f"returning {len(merged['rows'])} row(s) from earlier pages.",
+                flush=True,
             )
 
     if merged["rows"]:

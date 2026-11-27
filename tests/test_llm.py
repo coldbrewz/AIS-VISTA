@@ -1,3 +1,4 @@
+import contextlib
 import io
 import json
 import unittest
@@ -6,7 +7,7 @@ from unittest.mock import patch
 from PIL import Image
 
 from config import settings
-from services.llm import extract_json_str, extract_opname_form_ocr
+from services.llm import _read_chat_completion_content, extract_json_str, extract_opname_form_ocr
 
 
 def _tiny_jpeg_bytes() -> bytes:
@@ -237,6 +238,88 @@ class OpnameOCRStreamTests(unittest.TestCase):
         self.assertAlmostEqual(res["rows"][1]["jml"], 5.0)
         self.assertTrue(res["rows"][0]["dimension_edited"])
         self.assertTrue(res["rows"][1]["dimension_edited"])
+
+    @patch("services.llm.requests.post")
+    def test_opname_ocr_logs_before_pass1_and_pass2_requests(self, mock_post):
+        p1_payload = json.dumps(
+            {
+                "aset": "PV",
+                "vendor": "MIJ",
+                "wilayah": "W1",
+                "minggu": "M3",
+                "rows": [
+                    {
+                        "row_no": "108",
+                        "tanggal": "2026-08-09",
+                        "raw_item": "Permanen",
+                        "p": 6.1,
+                        "l": 2.4,
+                        "t": 0.07,
+                        "vol_vendor": 1.025,
+                        "vol_opname": None,
+                        "dimension_edited": True,
+                        "handwritten_edited": True,
+                    }
+                ],
+            }
+        )
+        p2_payload = json.dumps(
+            {
+                "corrections": [
+                    {
+                        "row_index": 0,
+                        "row_no": "108",
+                        "field": "p",
+                        "crossed_out_printed": 6.1,
+                        "handwritten_replacement": "5,4",
+                    }
+                ]
+            }
+        )
+        mock_post.side_effect = [
+            _FakeResponse(
+                headers={"Content-Type": "text/event-stream"},
+                lines=[
+                    f"data: {json.dumps({'choices': [{'delta': {'content': p1_payload}}]})}",
+                    "data: [DONE]",
+                ],
+            ),
+            _FakeResponse(
+                headers={"Content-Type": "text/event-stream"},
+                lines=[
+                    f"data: {json.dumps({'choices': [{'delta': {'content': p2_payload}}]})}",
+                    "data: [DONE]",
+                ],
+            ),
+        ]
+
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            res, err = extract_opname_form_ocr([_tiny_jpeg_bytes()], "PV", "Scan Opname PV M3", "II.1 Permanen")
+
+        self.assertEqual(err, "")
+        self.assertAlmostEqual(res["rows"][0]["p"], 5.4)
+        out = buf.getvalue()
+        self.assertIn("[Opname OCR] Page 1/1 | sending Pass 1", out)
+        self.assertIn("sending Pass 2", out)
+        self.assertEqual(mock_post.call_args_list[0].kwargs.get("timeout"), (15, 60))
+        self.assertEqual(mock_post.call_args_list[1].kwargs.get("timeout"), (15, 40))
+
+    def test_read_chat_completion_content_aborts_sse_over_max_seconds(self):
+        c1, c2 = '{"rows":', '[]}'
+        sse_lines = [
+            f"data: {json.dumps({'choices': [{'delta': {'content': c1}}]})}",
+            f"data: {json.dumps({'choices': [{'delta': {'content': c2}}]})}",
+            "data: [DONE]",
+        ]
+        fake_resp = _FakeResponse(
+            headers={"Content-Type": "text/event-stream"},
+            lines=sse_lines,
+        )
+        with patch("services.llm.time.monotonic", side_effect=[100.0, 101.0, 200.0]):
+            with self.assertRaises(TimeoutError) as ctx:
+                _read_chat_completion_content(fake_resp, max_seconds=45.0)
+        self.assertIn("exceeded 45s total limit", str(ctx.exception))
 
 
 if __name__ == "__main__":
