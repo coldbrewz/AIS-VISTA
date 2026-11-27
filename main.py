@@ -2313,7 +2313,16 @@ def process_message(message: dict):
         elif "kode:" in body.lower() or "kode :" in body.lower():
             send_whatsapp_message(reply_chat_id, "⚠️ *Update Gagal*\nHarap kirimkan *foto dokumentasi* beserta caption dengan format Kode yang benar (contoh: *Kode: 240523PV001*).", session)
 
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, FileResponse
+
+@app.get("/logo.svg", include_in_schema=False)
+@app.get("/favicon.ico", include_in_schema=False)
+def favicon_file():
+    return FileResponse(
+        Path(__file__).with_name("logo.svg"),
+        media_type="image/svg+xml",
+        headers={"Cache-Control": "public, max-age=86400"},
+    )
 
 @app.get("/", response_class=HTMLResponse)
 def read_root(request: Request):
@@ -2324,7 +2333,7 @@ def read_root(request: Request):
         guide_url = "/guide"
     else:
         ip_only = host.split(":")[0] if host else "129.225.9.167"
-        waha_url = f"http://{ip_only}:3000"
+        waha_url = settings.WAHA_PUBLIC_URL or f"http://{ip_only}:3000"
         logs_url = "/logs"
         guide_url = "/guide"
 
@@ -2421,7 +2430,7 @@ def get_guide(request: Request):
         waha_dash_link = "https://waha.astrainfrasolutions.id"
     else:
         ip_only = host.split(":")[0] if host else "129.225.9.167"
-        waha_dash_link = f"http://{ip_only}:3000"
+        waha_dash_link = settings.WAHA_PUBLIC_URL or f"http://{ip_only}:3000"
     opname_editor_url = f"/opname?token={make_opname_token('DASHBOARD')}"
     return HTMLResponse(content=render_guide_page_html(waha_dash_link, opname_editor_url))
 

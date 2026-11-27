@@ -33,7 +33,7 @@ services:
     # GOWS is ultra-lightweight (~30MB RAM), but the Node.js NestJS wrapper needs ~300MB to start up.
     mem_limit: 512m
     ports:
-      - "3000:3000"
+      - "127.0.0.1:3000:3000"
     depends_on:
       - vista_bot
     networks:
@@ -44,7 +44,7 @@ services:
     container_name: vista_bot
     restart: unless-stopped
     ports:
-      - "5001:5001"
+      - "127.0.0.1:5001:5001"
     environment:
       - TZ=Asia/Jakarta
       - WAHA_URL=http://waha:3000

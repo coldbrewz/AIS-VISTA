@@ -9,6 +9,8 @@ class Settings(BaseSettings):
     
     WAHA_API_KEY: str = ""
     WAHA_URL: str = "http://localhost:3000"
+    # Public dashboard URL shown in the console/guide links (HTTPS via Caddy).
+    WAHA_PUBLIC_URL: str = "https://waha.ais-vista.duckdns.org"
     
     ADMIN_PHONE: str = ""
     DB_URL: str = "processed_messages.db"

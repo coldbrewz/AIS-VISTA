@@ -11,3 +11,9 @@ processed_messages.db
 waha-core/
 waha-local/
 *.log
+logs/
+
+# local backups — may contain secrets, never commit
+.env.bak*
+*.bak
+*.bak-*
