@@ -38,6 +38,16 @@ class _FakeResponse:
         return self._json_data
 
 
+class _ChunkedFakeResponse(_FakeResponse):
+    def __init__(self, status_code=200, headers=None, chunks=None, text=""):
+        super().__init__(status_code=status_code, headers=headers, text=text)
+        self._chunks = chunks or []
+
+    def iter_content(self, chunk_size=4096):
+        for chunk in self._chunks:
+            yield chunk
+
+
 class LLMJsonExtractTests(unittest.TestCase):
     def test_clean_json(self):
         text = '{"kode": "240523PV001", "sheet_name": "PV"}'
@@ -304,6 +314,8 @@ class OpnameOCRStreamTests(unittest.TestCase):
         self.assertIn("sending Pass 2", out)
         self.assertEqual(mock_post.call_args_list[0].kwargs.get("timeout"), (15, 60))
         self.assertEqual(mock_post.call_args_list[1].kwargs.get("timeout"), (15, 40))
+        self.assertEqual(mock_post.call_args_list[0].kwargs["json"]["max_tokens"], 4096)
+        self.assertEqual(mock_post.call_args_list[1].kwargs["json"]["max_tokens"], 1024)
 
     def test_read_chat_completion_content_aborts_sse_over_max_seconds(self):
         c1, c2 = '{"rows":', '[]}'
@@ -320,6 +332,27 @@ class OpnameOCRStreamTests(unittest.TestCase):
             with self.assertRaises(TimeoutError) as ctx:
                 _read_chat_completion_content(fake_resp, max_seconds=45.0)
         self.assertIn("exceeded 45s total limit", str(ctx.exception))
+
+    def test_read_chat_completion_content_aborts_non_sse_over_max_seconds(self):
+        fake_resp = _ChunkedFakeResponse(
+            headers={"Content-Type": "application/json"},
+            chunks=[b" ", b'{"choices": []}'],
+        )
+        with patch("services.llm.time.monotonic", side_effect=[100.0, 101.0, 200.0]):
+            with self.assertRaises(TimeoutError) as ctx:
+                _read_chat_completion_content(fake_resp, max_seconds=90.0)
+        self.assertIn("exceeded 90s total limit", str(ctx.exception))
+
+    def test_read_chat_completion_content_reports_sample_on_blank_json_body(self):
+        fake_resp = _ChunkedFakeResponse(
+            headers={"Content-Type": "application/json"},
+            chunks=[b" "],
+        )
+        with self.assertRaises(ValueError) as ctx:
+            _read_chat_completion_content(fake_resp, max_seconds=90.0)
+        msg = str(ctx.exception)
+        self.assertIn("ctype=application/json", msg)
+        self.assertIn("sample=' '", msg)
 
 
 if __name__ == "__main__":

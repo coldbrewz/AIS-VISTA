@@ -214,8 +214,8 @@ def _read_chat_completion_content(resp: requests.Response, max_seconds: float | 
     """Read message text from either an SSE stream or a standard JSON chat completion."""
     hdrs = {str(k).lower(): str(v) for k, v in (getattr(resp, "headers", None) or {}).items()}
     ctype = hdrs.get("content-type", "").lower()
+    deadline = (time.monotonic() + max_seconds) if max_seconds else None
     if "text/event-stream" in ctype:
-        deadline = (time.monotonic() + max_seconds) if max_seconds else None
         parts: list[str] = []
         for raw_line in resp.iter_lines(decode_unicode=True):
             if deadline is not None and time.monotonic() > deadline:
@@ -242,7 +242,22 @@ def _read_chat_completion_content(resp: requests.Response, max_seconds: float | 
                 parts.append(str(piece))
         return "".join(parts)
 
-    data_json = resp.json()
+    if callable(getattr(resp, "iter_content", None)):
+        raw_buf = bytearray()
+        for chunk in resp.iter_content(chunk_size=4096):
+            if deadline is not None and time.monotonic() > deadline:
+                raise TimeoutError(f"OCR response exceeded {int(max_seconds)}s total limit")
+            if chunk:
+                raw_buf.extend(chunk.encode("utf-8") if isinstance(chunk, str) else chunk)
+        body_text = raw_buf.decode("utf-8", errors="replace")
+        try:
+            data_json = json.loads(body_text)
+        except json.JSONDecodeError as je:
+            raise ValueError(
+                f"Invalid API JSON (ctype={ctype or 'unknown'}, len={len(body_text)}, sample={body_text[:120]!r}): {je}"
+            ) from je
+    else:
+        data_json = resp.json()
     if not isinstance(data_json, dict):
         return ""
     choices = data_json.get("choices") or []
@@ -307,6 +322,7 @@ def _verify_handwritten_edits_on_page(
             }
         ],
         "temperature": 0.0,
+        "max_tokens": 1024,
         "stream": True,
     }
     t0 = time.monotonic()
@@ -444,6 +460,7 @@ def extract_opname_form_ocr(
                 }
             ],
             "temperature": 0.0,
+            "max_tokens": 4096,
             "stream": True,
         }
 
@@ -481,7 +498,12 @@ def extract_opname_form_ocr(
                         time.sleep(2)
                         continue
                     break
-                parsed = json.loads(extract_json_str(raw_content))
+                try:
+                    parsed = json.loads(extract_json_str(raw_content))
+                except json.JSONDecodeError as je:
+                    raise ValueError(
+                        f"Invalid OCR JSON (len={len(raw_content)}, sample={raw_content[:120]!r}): {je}"
+                    ) from je
                 if not isinstance(parsed, dict):
                     raise ValueError("OCR JSON root is not an object")
                 page_rows = parsed.get("rows") or []
