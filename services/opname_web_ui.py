@@ -494,6 +494,58 @@ main.review-main {{
     font-weight: 700;
 }}
 
+.filter-bar {{
+    margin-bottom: 12px;
+    padding: 12px 14px;
+}}
+
+.filter-controls {{
+    display: grid;
+    grid-template-columns: minmax(0, 1fr);
+    gap: 10px;
+}}
+
+.filter-controls > * {{
+    min-width: 0;
+}}
+
+.filter-meta-row {{
+    margin-top: 10px;
+    padding-top: 10px;
+    border-top: 1px solid var(--border-divider);
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+}}
+
+.filter-chips {{
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    align-items: center;
+}}
+
+.filter-chip.is-active,
+.filter-chip.is-active:hover:not(:disabled) {{
+    background-color: var(--accent);
+    color: #FFFFFF;
+    border-color: var(--accent-hover);
+}}
+
+.filter-count {{
+    font-size: 0.85rem;
+    font-weight: 600;
+    color: var(--text-secondary);
+}}
+
+@media (min-width: 720px) {{
+    .filter-controls {{
+        grid-template-columns: minmax(0, 2fr) minmax(0, 1fr) minmax(0, 1fr);
+    }}
+}}
+
 .rows-list {{
     display: flex;
     flex-direction: column;
@@ -896,7 +948,41 @@ main.review-main {{
                         <button type="button" class="btn btn-sm" id="addRowTopBtn">+ Tambah Baris</button>
                     </div>
 
+                    <section id="rowFilterBar" class="panel filter-bar hidden" aria-label="Filter baris pekerjaan">
+                        <div class="filter-controls">
+                            <div>
+                                <label class="field-label" for="rowSearchInput">Cari Lokasi / Kode / Item</label>
+                                <input id="rowSearchInput" class="input" type="search" placeholder="Contoh: KM 45, Cikande, Permanen, L1..." />
+                            </div>
+                            <div>
+                                <label class="field-label" for="rowItemFilter">Filter Item BOQ</label>
+                                <select id="rowItemFilter" class="select">
+                                    <option value="">Semua Item</option>
+                                </select>
+                            </div>
+                            <div>
+                                <label class="field-label" for="rowDateFilter">Filter Tanggal</label>
+                                <select id="rowDateFilter" class="select">
+                                    <option value="">Semua Tanggal</option>
+                                </select>
+                            </div>
+                        </div>
+                        <div class="filter-meta-row">
+                            <div id="filterStatusText" class="filter-count">Menampilkan semua 0 baris</div>
+                            <div class="filter-chips">
+                                <button type="button" class="btn btn-sm filter-chip hidden" id="filterEditedChip" aria-pressed="false">Revisi OCR</button>
+                                <button type="button" class="btn btn-sm filter-chip hidden" id="filterErrorChip" aria-pressed="false">Baris Error</button>
+                                <button type="button" class="btn btn-sm hidden" id="clearFilterBtn">Reset Filter</button>
+                            </div>
+                        </div>
+                    </section>
+
                     <div id="rowsContainer" class="rows-list"></div>
+
+                    <div id="filterEmptyState" class="panel hidden" style="text-align: center; padding: 20px; margin-top: 12px;">
+                        <p style="margin: 0 0 12px 0; color: var(--text-secondary);">Tidak ada baris yang cocok dengan filter saat ini.</p>
+                        <button type="button" class="btn btn-sm" id="emptyResetFilterBtn">Tampilkan Semua Baris</button>
+                    </div>
 
                     <section class="panel" style="margin-top: 16px;" aria-labelledby="summaryTitle">
                         <h2 id="summaryTitle" style="margin: 0 0 10px 0; font-size: 1rem;">Ringkasan Volume per Item BOQ</h2>
@@ -980,6 +1066,16 @@ main.review-main {{
         const xlsxArchiveLinkWrap = document.getElementById("xlsxArchiveLinkWrap");
         const rowsContainer = document.getElementById("rowsContainer");
         const rowCountLabel = document.getElementById("rowCountLabel");
+        const rowFilterBar = document.getElementById("rowFilterBar");
+        const rowSearchInput = document.getElementById("rowSearchInput");
+        const rowItemFilter = document.getElementById("rowItemFilter");
+        const rowDateFilter = document.getElementById("rowDateFilter");
+        const filterEditedChip = document.getElementById("filterEditedChip");
+        const filterErrorChip = document.getElementById("filterErrorChip");
+        const clearFilterBtn = document.getElementById("clearFilterBtn");
+        const filterStatusText = document.getElementById("filterStatusText");
+        const filterEmptyState = document.getElementById("filterEmptyState");
+        const emptyResetFilterBtn = document.getElementById("emptyResetFilterBtn");
         const summaryGrid = document.getElementById("summaryGrid");
         const addRowTopBtn = document.getElementById("addRowTopBtn");
         const addRowBtn = document.getElementById("addRowBtn");
@@ -999,6 +1095,13 @@ main.review-main {{
             lastFocusedEl: null,
             modalZoom: 1,
             modalRotate: 0,
+            filters: {{
+                query: "",
+                itemKey: "",
+                tanggal: "",
+                onlyEdited: false,
+                onlyErrors: false,
+            }},
         }};
 
         function esc(str) {{
@@ -1172,6 +1275,142 @@ main.review-main {{
             return Number(prod.toFixed(4));
         }}
 
+        function hasActiveFilters() {{
+            const f = state.filters;
+            return Boolean((f.query || "").trim() || f.itemKey || f.tanggal || f.onlyEdited || f.onlyErrors);
+        }}
+
+        function syncFilterChipButtons() {{
+            filterEditedChip.classList.toggle("is-active", Boolean(state.filters.onlyEdited));
+            filterEditedChip.setAttribute("aria-pressed", state.filters.onlyEdited ? "true" : "false");
+            filterErrorChip.classList.toggle("is-active", Boolean(state.filters.onlyErrors));
+            filterErrorChip.setAttribute("aria-pressed", state.filters.onlyErrors ? "true" : "false");
+        }}
+
+        function resetFilters(skipApply) {{
+            state.filters.query = "";
+            state.filters.itemKey = "";
+            state.filters.tanggal = "";
+            state.filters.onlyEdited = false;
+            state.filters.onlyErrors = false;
+            rowSearchInput.value = "";
+            rowItemFilter.value = "";
+            rowDateFilter.value = "";
+            syncFilterChipButtons();
+            if (!skipApply) {{
+                applyRowFilter();
+            }}
+        }}
+
+        function populateFilterOptions() {{
+            if (state.rows.length === 0) {{
+                rowFilterBar.classList.add("hidden");
+                filterEmptyState.classList.add("hidden");
+                return;
+            }}
+            rowFilterBar.classList.remove("hidden");
+
+            const itemMap = new Map();
+            const dateSet = new Set();
+            let hasEdited = false;
+            const hasErrors = Object.keys(state.rowErrors || {{}}).length > 0;
+
+            state.rows.forEach(function(r) {{
+                if (r.item_key && !itemMap.has(r.item_key)) {{
+                    const boq = getBoqByKey(r.item_key);
+                    const lbl = (boq ? boq.keyword : (r.keyword || r.item_key)) + " [" + r.item_key + "]";
+                    itemMap.set(r.item_key, lbl);
+                }}
+                if (r.tanggal) {{
+                    dateSet.add(r.tanggal);
+                }}
+                if (r.handwritten_edited) {{
+                    hasEdited = true;
+                }}
+            }});
+
+            const prevItem = state.filters.itemKey;
+            let itemHtml = '<option value="">Semua Item</option>';
+            itemMap.forEach(function(lbl, key) {{
+                const sel = key === prevItem ? " selected" : "";
+                itemHtml += '<option value="' + esc(key) + '"' + sel + '>' + esc(lbl) + '</option>';
+            }});
+            rowItemFilter.innerHTML = itemHtml;
+            if (prevItem && !itemMap.has(prevItem)) {{
+                state.filters.itemKey = "";
+            }}
+
+            const prevDate = state.filters.tanggal;
+            let dateHtml = '<option value="">Semua Tanggal</option>';
+            Array.from(dateSet).sort().forEach(function(dt) {{
+                const sel = dt === prevDate ? " selected" : "";
+                dateHtml += '<option value="' + esc(dt) + '"' + sel + '>' + esc(dt) + '</option>';
+            }});
+            rowDateFilter.innerHTML = dateHtml;
+            if (prevDate && !dateSet.has(prevDate)) {{
+                state.filters.tanggal = "";
+            }}
+
+            filterEditedChip.classList.toggle("hidden", !hasEdited);
+            if (!hasEdited) state.filters.onlyEdited = false;
+            filterErrorChip.classList.toggle("hidden", !hasErrors);
+            if (!hasErrors) state.filters.onlyErrors = false;
+            syncFilterChipButtons();
+        }}
+
+        function rowMatchesFilter(row, idx) {{
+            const f = state.filters;
+            if (f.itemKey && row.item_key !== f.itemKey) return false;
+            if (f.tanggal && row.tanggal !== f.tanggal) return false;
+            if (f.onlyEdited && !row.handwritten_edited) return false;
+            if (f.onlyErrors && !state.rowErrors[idx]) return false;
+
+            const q = String(f.query || "").trim().toLowerCase();
+            if (!q) return true;
+            const boq = getBoqByKey(row.item_key);
+            const hay = [
+                "#" + (idx + 1),
+                row.tanggal,
+                row.kode_temuan,
+                row.lokasi,
+                row.jalur,
+                row.lajur,
+                row.item_key,
+                (boq && boq.keyword) || row.keyword,
+                (boq && boq.uraian) || row.uraian,
+                row.keterangan,
+            ].map(function(v) {{ return String(v || "").toLowerCase(); }}).join(" ");
+
+            const tokens = q.split(/\s+/).filter(Boolean);
+            return tokens.every(function(tok) {{
+                return hay.indexOf(tok) !== -1;
+            }});
+        }}
+
+        function applyRowFilter() {{
+            const total = state.rows.length;
+            if (total === 0) {{
+                filterEmptyState.classList.add("hidden");
+                return;
+            }}
+            const cards = rowsContainer.querySelectorAll(".row-card");
+            let visibleCount = 0;
+            cards.forEach(function(card, i) {{
+                const idx = parseInt(card.dataset.index || String(i), 10);
+                const row = state.rows[idx];
+                const match = row ? rowMatchesFilter(row, idx) : true;
+                card.classList.toggle("hidden", !match);
+                if (match) visibleCount += 1;
+            }});
+
+            const active = hasActiveFilters();
+            clearFilterBtn.classList.toggle("hidden", !active);
+            filterEmptyState.classList.toggle("hidden", visibleCount > 0);
+            filterStatusText.textContent = active
+                ? ("Menampilkan " + visibleCount + " dari " + total + " baris (semua " + total + " baris tetap tersimpan)")
+                : ("Menampilkan semua " + total + " baris");
+        }}
+
         function renderRows() {{
             rowCountLabel.textContent = String(state.rows.length);
             if (state.rows.length === 0) {{
@@ -1181,6 +1420,7 @@ main.review-main {{
                     '<button type="button" class="btn" id="emptyAddBtn">+ Tambah Baris Pertama</button>' +
                     '</div>';
                 document.getElementById("emptyAddBtn").addEventListener("click", addNewRow);
+                populateFilterOptions();
                 renderSummary();
                 updateSlotPreview();
                 return;
@@ -1346,6 +1586,8 @@ main.review-main {{
                 rowsContainer.appendChild(card);
             }});
 
+            populateFilterOptions();
+            applyRowFilter();
             renderSummary();
             updateSlotPreview();
         }}
@@ -1371,8 +1613,13 @@ main.review-main {{
                 keterangan: "",
                 _autoCalc: false,
             }});
+            resetFilters(true);
             markDirty();
             renderRows();
+            const cards = rowsContainer.querySelectorAll(".row-card");
+            if (cards.length > 0) {{
+                cards[cards.length - 1].scrollIntoView({{ block: "nearest", behavior: "smooth" }});
+            }}
         }}
 
         function populatePage(data) {{
@@ -1383,6 +1630,7 @@ main.review-main {{
             }});
             state.dirty = false;
             state.rowErrors = {{}};
+            resetFilters(true);
 
             const isPending = data.record_type === "PENDING";
             pageSubEl.textContent = isPending
@@ -1527,6 +1775,7 @@ main.review-main {{
                     if (msgLines.length === 0) {{
                         msgLines.push((res.body && res.body.detail) || "Terjadi kesalahan validasi saat menyimpan.");
                     }}
+                    resetFilters(true);
                     renderRows();
                     showBanner("error", "ERROR: Simpan Dibatalkan, Perbaiki Baris Berikut", msgLines);
                     return;
@@ -1566,6 +1815,31 @@ main.review-main {{
         addRowTopBtn.addEventListener("click", addNewRow);
         addRowBtn.addEventListener("click", addNewRow);
         retryBtn.addEventListener("click", fetchRecord);
+
+        rowSearchInput.addEventListener("input", function() {{
+            state.filters.query = rowSearchInput.value || "";
+            applyRowFilter();
+        }});
+        rowItemFilter.addEventListener("change", function() {{
+            state.filters.itemKey = rowItemFilter.value || "";
+            applyRowFilter();
+        }});
+        rowDateFilter.addEventListener("change", function() {{
+            state.filters.tanggal = rowDateFilter.value || "";
+            applyRowFilter();
+        }});
+        filterEditedChip.addEventListener("click", function() {{
+            state.filters.onlyEdited = !state.filters.onlyEdited;
+            syncFilterChipButtons();
+            applyRowFilter();
+        }});
+        filterErrorChip.addEventListener("click", function() {{
+            state.filters.onlyErrors = !state.filters.onlyErrors;
+            syncFilterChipButtons();
+            applyRowFilter();
+        }});
+        clearFilterBtn.addEventListener("click", function() {{ resetFilters(false); }});
+        emptyResetFilterBtn.addEventListener("click", function() {{ resetFilters(false); }});
 
         scanToggleBtn.addEventListener("click", function() {{
             const collapsed = scanBody.classList.toggle("is-collapsed");

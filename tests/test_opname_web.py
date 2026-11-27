@@ -202,12 +202,16 @@ class OpnameWebTests(unittest.TestCase):
         expected_url = f"http://ais-vista.duckdns.org:5001/review/{scan_id}?token={scan_tok}"
         self.assertIn(expected_url, preview_text)
 
-        # Render HTML page and verify anti-slop / responsive markers
+        # Render HTML page and verify anti-slop / responsive markers + row filter controls
         html_resp = self.client.get(f"/review/{scan_id}?token={scan_tok}")
         self.assertEqual(html_resp.status_code, 200)
         self.assertNotIn("\u2014", html_resp.text)
         self.assertIn('name="viewport"', html_resp.text)
         self.assertIn("Simpan ke DATA UNTUK VOL", html_resp.text)
+        self.assertIn('id="rowFilterBar"', html_resp.text)
+        self.assertIn('id="rowSearchInput"', html_resp.text)
+        self.assertIn('id="rowItemFilter"', html_resp.text)
+        self.assertIn('id="rowDateFilter"', html_resp.text)
 
         # JSON review endpoint returns OCR entries, catalog, and media URL
         api_resp = self.client.get(f"/api/opname/review/{scan_id}?token={scan_tok}")
