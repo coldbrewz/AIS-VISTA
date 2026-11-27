@@ -214,6 +214,18 @@ body {
     border-color: var(--err-border);
 }
 
+.tag-added {
+    background-color: var(--success-bg);
+    color: var(--success-text);
+    border-color: var(--success-border);
+}
+
+.tag-removed {
+    background-color: var(--err-bg);
+    color: var(--err-text);
+    border-color: var(--err-border);
+}
+
 .panel {
     background-color: var(--bg-surface);
     border: 1px solid var(--border-divider);
@@ -563,6 +575,32 @@ main.review-main {{
 
 .row-card.has-error {{
     border-color: var(--err-border);
+}}
+
+.row-card.is-removed {{
+    opacity: 0.72;
+    border-style: dashed;
+    border-color: var(--err-border);
+    background-color: #FFFBFB;
+}}
+
+.diff-strip {{
+    margin-bottom: 10px;
+    padding: 7px 10px;
+    border-radius: var(--radius-control);
+    background-color: var(--warn-bg);
+    border: 1px solid var(--warn-border);
+    color: var(--warn-text);
+    font-size: 0.85rem;
+    font-weight: 600;
+}}
+
+.ocr-review-banner {{
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
 }}
 
 .row-card-top {{
@@ -950,6 +988,11 @@ main.review-main {{
                         <button type="button" class="btn btn-sm" id="addRowTopBtn">+ Tambah Baris</button>
                     </div>
 
+                    <div id="ocrReviewBanner" class="banner banner-warn ocr-review-banner hidden" role="status">
+                        <div id="ocrReviewBannerText"></div>
+                        <button type="button" class="btn btn-sm" id="bannerFilterEditedBtn">Filter Revisi Tangan Saja</button>
+                    </div>
+
                     <section id="rowFilterBar" class="panel filter-bar hidden" aria-label="Filter baris pekerjaan">
                         <div class="filter-controls">
                             <div>
@@ -1068,6 +1111,9 @@ main.review-main {{
         const xlsxArchiveLinkWrap = document.getElementById("xlsxArchiveLinkWrap");
         const rowsContainer = document.getElementById("rowsContainer");
         const rowCountLabel = document.getElementById("rowCountLabel");
+        const ocrReviewBanner = document.getElementById("ocrReviewBanner");
+        const ocrReviewBannerText = document.getElementById("ocrReviewBannerText");
+        const bannerFilterEditedBtn = document.getElementById("bannerFilterEditedBtn");
         const rowFilterBar = document.getElementById("rowFilterBar");
         const rowSearchInput = document.getElementById("rowSearchInput");
         const rowItemFilter = document.getElementById("rowItemFilter");
@@ -1236,6 +1282,7 @@ main.review-main {{
         function renderSummary() {{
             const totals = new Map();
             state.rows.forEach(function(r) {{
+                if (r.row_action === "REMOVED") return;
                 const vol = parseFloat(r.volume);
                 if (!r.item_key || isNaN(vol) || vol <= 0) return;
                 const boq = getBoqByKey(r.item_key);
@@ -1283,10 +1330,14 @@ main.review-main {{
         }}
 
         function syncFilterChipButtons() {{
-            filterEditedChip.classList.toggle("is-active", Boolean(state.filters.onlyEdited));
-            filterEditedChip.setAttribute("aria-pressed", state.filters.onlyEdited ? "true" : "false");
+            const isEd = Boolean(state.filters.onlyEdited);
+            filterEditedChip.classList.toggle("is-active", isEd);
+            filterEditedChip.setAttribute("aria-pressed", isEd ? "true" : "false");
             filterErrorChip.classList.toggle("is-active", Boolean(state.filters.onlyErrors));
             filterErrorChip.setAttribute("aria-pressed", state.filters.onlyErrors ? "true" : "false");
+            if (bannerFilterEditedBtn) {{
+                bannerFilterEditedBtn.textContent = isEd ? "Tampilkan Semua Baris" : "Filter Revisi Tangan Saja";
+            }}
         }}
 
         function resetFilters(skipApply) {{
@@ -1306,6 +1357,7 @@ main.review-main {{
 
         function populateFilterOptions() {{
             if (state.rows.length === 0) {{
+                ocrReviewBanner.classList.add("hidden");
                 rowFilterBar.classList.add("hidden");
                 filterEmptyState.classList.add("hidden");
                 return;
@@ -1314,7 +1366,9 @@ main.review-main {{
 
             const itemMap = new Map();
             const dateSet = new Set();
-            let hasEdited = false;
+            let editedCount = 0;
+            let addedCount = 0;
+            let removedCount = 0;
             const hasErrors = Object.keys(state.rowErrors || {{}}).length > 0;
 
             state.rows.forEach(function(r) {{
@@ -1326,9 +1380,13 @@ main.review-main {{
                 if (r.tanggal) {{
                     dateSet.add(r.tanggal);
                 }}
-                if (r.handwritten_edited) {{
-                    hasEdited = true;
+                const isAdded = r.row_action === "ADDED";
+                const isRemoved = r.row_action === "REMOVED";
+                if (r.handwritten_edited || isAdded || isRemoved) {{
+                    editedCount += 1;
                 }}
+                if (isAdded) addedCount += 1;
+                if (isRemoved) removedCount += 1;
             }});
 
             const prevItem = state.filters.itemKey;
@@ -1353,8 +1411,23 @@ main.review-main {{
                 state.filters.tanggal = "";
             }}
 
+            const hasEdited = editedCount > 0;
+            filterEditedChip.textContent = "Revisi Tangan OCR (" + editedCount + ")";
             filterEditedChip.classList.toggle("hidden", !hasEdited);
             if (!hasEdited) state.filters.onlyEdited = false;
+            if (hasEdited) {{
+                const modifiedCount = Math.max(0, editedCount - addedCount - removedCount);
+                const parts = [];
+                if (modifiedCount > 0) parts.push(modifiedCount + " ubah angka");
+                if (addedCount > 0) parts.push(addedCount + " tambah");
+                if (removedCount > 0) parts.push(removedCount + " hapus");
+                ocrReviewBannerText.textContent =
+                    "Ditemukan " + editedCount + " baris revisi tangan OCR" +
+                    (parts.length ? " (" + parts.join(", ") + ")" : "") + ".";
+                ocrReviewBanner.classList.remove("hidden");
+            }} else {{
+                ocrReviewBanner.classList.add("hidden");
+            }}
             filterErrorChip.classList.toggle("hidden", !hasErrors);
             if (!hasErrors) state.filters.onlyErrors = false;
             syncFilterChipButtons();
@@ -1364,7 +1437,7 @@ main.review-main {{
             const f = state.filters;
             if (f.itemKey && row.item_key !== f.itemKey) return false;
             if (f.tanggal && row.tanggal !== f.tanggal) return false;
-            if (f.onlyEdited && !row.handwritten_edited) return false;
+            if (f.onlyEdited && !row.handwritten_edited && row.row_action !== "ADDED" && row.row_action !== "REMOVED") return false;
             if (f.onlyErrors && !state.rowErrors[idx]) return false;
 
             const q = String(f.query || "").trim().toLowerCase();
@@ -1434,7 +1507,9 @@ main.review-main {{
             state.rows.forEach(function(row, idx) {{
                 const card = document.createElement("div");
                 const rowErr = state.rowErrors[idx];
-                card.className = "row-card" + (rowErr ? " has-error" : "");
+                const isRemoved = row.row_action === "REMOVED";
+                const isAdded = row.row_action === "ADDED";
+                card.className = "row-card" + (rowErr ? " has-error" : "") + (isRemoved ? " is-removed" : "");
                 card.dataset.index = String(idx);
 
                 const [jalurVal, lajurVal] = row.jalur !== undefined ? [row.jalur, row.lajur || ""] : splitJalurLajur(row.jalur_lajur);
@@ -1457,18 +1532,57 @@ main.review-main {{
                     ? '<div class="banner banner-error" style="margin-bottom: 10px; padding: 8px 10px;" role="alert">' + esc(rowErr) + '</div>'
                     : "";
 
+                let statusBadges = "";
+                if (isRemoved) {{
+                    statusBadges += '<span class="tag tag-removed">DIHAPUS / BATAL</span>';
+                }} else if (isAdded) {{
+                    statusBadges += '<span class="tag tag-added">+ TAMBAHAN</span>';
+                }} else if (row.handwritten_edited) {{
+                    statusBadges += '<span class="tag tag-warn">Revisi Tangan OCR</span>';
+                }}
+
+                const diffParts = [];
+                if (!isRemoved && !isAdded) {{
+                    [["P", "p", "vendor_p"], ["L", "l", "vendor_l"], ["T", "t", "vendor_t"], ["Jml", "jml", "vendor_jml"]].forEach(function(pair) {{
+                        const lbl = pair[0], k = pair[1], vk = pair[2];
+                        if (row[vk] != null && row[vk] !== "" && row[k] != null && row[k] !== "") {{
+                            const vOld = Number(String(row[vk]).replace(",", "."));
+                            const vNew = Number(String(row[k]).replace(",", "."));
+                            if (!isNaN(vOld) && !isNaN(vNew) && Math.abs(vOld - vNew) > 0.001) {{
+                                diffParts.push(lbl + " " + vOld + " -> " + vNew);
+                            }}
+                        }}
+                    }});
+                    if (row.vol_vendor != null && row.vol_vendor !== "" && row.volume != null && row.volume !== "") {{
+                        const vvOld = Number(String(row.vol_vendor).replace(",", "."));
+                        const vvNew = Number(String(row.volume).replace(",", "."));
+                        if (!isNaN(vvOld) && !isNaN(vvNew) && Math.abs(vvOld - vvNew) > 0.001) {{
+                            diffParts.push("Vol " + vvOld + " -> " + vvNew + (row.satuan ? " " + row.satuan : ""));
+                        }}
+                    }}
+                }}
+                const diffHtml = diffParts.length > 0
+                    ? '<div class="diff-strip">Vendor -> Opname: ' + esc(diffParts.join(" | ")) + '</div>'
+                    : "";
+
+                const restoreBtnHtml = isRemoved
+                    ? '<button type="button" class="btn btn-sm restore-row-btn" aria-label="Pulihkan baris ' + (idx + 1) + '">Pulihkan Baris</button>'
+                    : "";
+
                 card.innerHTML =
                     '<div class="row-card-top">' +
                         '<div class="row-card-title">' +
                             '<span class="mono">Baris #' + (idx + 1) + '</span>' +
-                            (row.handwritten_edited ? '<span class="tag tag-warn">Revisi Tangan OCR</span>' : '') +
+                            statusBadges +
                         '</div>' +
                         '<div class="row-card-actions">' +
+                            restoreBtnHtml +
                             '<button type="button" class="btn btn-sm dup-row-btn" aria-label="Duplikat baris ' + (idx + 1) + '">Duplikat</button>' +
                             '<button type="button" class="btn btn-sm btn-danger del-row-btn" aria-label="Hapus baris ' + (idx + 1) + '">Hapus</button>' +
                         '</div>' +
                     '</div>' +
                     errHtml +
+                    diffHtml +
                     '<div class="row-fields">' +
                         '<div class="f-tanggal">' +
                             '<label class="field-label" for="tgl_' + idx + '">Tanggal</label>' +
@@ -1519,8 +1633,24 @@ main.review-main {{
                         '</div>' +
                     '</div>';
 
+                const restoreBtn = card.querySelector(".restore-row-btn");
+                if (restoreBtn) {{
+                    restoreBtn.addEventListener("click", function() {{
+                        row.row_action = "";
+                        const dimV = calcDimVolume(row);
+                        if (row.vol_vendor != null && Number(row.vol_vendor) > 0) {{
+                            row.volume = Number(row.vol_vendor);
+                        }} else if (dimV !== null && dimV > 0) {{
+                            row.volume = dimV;
+                        }}
+                        state.rowErrors = {{}};
+                        markDirty();
+                        renderRows();
+                    }});
+                }}
+
                 card.querySelector(".dup-row-btn").addEventListener("click", function() {{
-                    const copy = Object.assign({{}}, row, {{ handwritten_edited: false }});
+                    const copy = Object.assign({{}}, row, {{ handwritten_edited: false, row_action: "" }});
                     state.rows.splice(idx + 1, 0, copy);
                     state.rowErrors = {{}};
                     markDirty();
@@ -1719,8 +1849,9 @@ main.review-main {{
             statusBanner.classList.add("hidden");
             state.rowErrors = {{}};
 
-            if (state.rows.length === 0) {{
-                showBanner("error", "ERROR: Belum Ada Baris Pekerjaan", ["Tambahkan minimal 1 baris pekerjaan sebelum menyimpan."]);
+            const activeRows = state.rows.filter(function(r) {{ return r.row_action !== "REMOVED"; }});
+            if (activeRows.length === 0) {{
+                showBanner("error", "ERROR: Belum Ada Baris Aktif", ["Minimal 1 baris aktif wajib ada (pulihkan atau tambah baris)."]);
                 return;
             }}
 
@@ -1747,6 +1878,7 @@ main.review-main {{
                         jml: r.jml === "" || r.jml == null ? null : Number(String(r.jml).replace(",", ".")),
                         vol_vendor: r.vol_vendor == null ? null : Number(r.vol_vendor),
                         volume: r.volume === "" || r.volume == null ? 0 : Number(String(r.volume).replace(",", ".")),
+                        row_action: r.row_action || "",
                         material_status: r.material_status || "",
                         keterangan: r.keterangan || "",
                     }};
@@ -1831,6 +1963,11 @@ main.review-main {{
             applyRowFilter();
         }});
         filterEditedChip.addEventListener("click", function() {{
+            state.filters.onlyEdited = !state.filters.onlyEdited;
+            syncFilterChipButtons();
+            applyRowFilter();
+        }});
+        bannerFilterEditedBtn.addEventListener("click", function() {{
             state.filters.onlyEdited = !state.filters.onlyEdited;
             syncFilterChipButtons();
             applyRowFilter();

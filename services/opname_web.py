@@ -393,6 +393,9 @@ def _validate_and_build_slots(
         if not isinstance(raw_r, dict):
             errors.append({"row": idx, "field": "row", "message": "Format baris tidak valid."})
             continue
+        row_action = str(raw_r.get("row_action") or "").strip().upper()
+        if row_action == "REMOVED":
+            continue
 
         row_has_error = False
         parsed_date = parse_opname_date_str(str(raw_r.get("tanggal") or ""))
@@ -479,6 +482,10 @@ def _validate_and_build_slots(
 
     if errors:
         return [], [], warnings, errors
+    if not parsed_entries:
+        return [], [], warnings, [
+            {"row": 0, "field": "entries", "message": "Minimal 1 baris aktif wajib diisi (semua baris ditandai dihapus)."}
+        ]
 
     assert aset
     _, table_name, _ = ASSET_TO_TABLE[aset]

@@ -312,10 +312,96 @@ class OpnameOCRStreamTests(unittest.TestCase):
         out = buf.getvalue()
         self.assertIn("[Opname OCR] Page 1/1 | sending Pass 1", out)
         self.assertIn("sending Pass 2", out)
-        self.assertEqual(mock_post.call_args_list[0].kwargs.get("timeout"), (15, 60))
-        self.assertEqual(mock_post.call_args_list[1].kwargs.get("timeout"), (15, 40))
-        self.assertEqual(mock_post.call_args_list[0].kwargs["json"]["max_tokens"], 4096)
-        self.assertEqual(mock_post.call_args_list[1].kwargs["json"]["max_tokens"], 1024)
+        self.assertEqual(mock_post.call_args_list[0].kwargs.get("timeout"), (15, 75))
+        self.assertEqual(mock_post.call_args_list[1].kwargs.get("timeout"), (15, 45))
+        self.assertEqual(mock_post.call_args_list[0].kwargs["json"]["max_tokens"], 16384)
+        self.assertEqual(mock_post.call_args_list[1].kwargs["json"]["max_tokens"], 6144)
+
+    @patch("services.llm.requests.post")
+    def test_opname_ocr_extracts_added_removed_rekap_revisi_and_pass2_skips_them(self, mock_post):
+        p1_payload = json.dumps(
+            {
+                "aset": "PV",
+                "vendor": "MIJ",
+                "wilayah": "W1",
+                "minggu": "M3",
+                "rows": [
+                    {
+                        "row_no": "108",
+                        "tanggal": "2026-08-09",
+                        "raw_item": "Permanen",
+                        "p": 6.1,
+                        "l": 2.4,
+                        "t": 0.07,
+                        "vol_vendor": 1.025,
+                        "vol_opname": None,
+                        "dimension_edited": True,
+                        "handwritten_edited": True,
+                        "row_action": "",
+                    },
+                    {
+                        "row_no": "109",
+                        "tanggal": "2026-08-09",
+                        "raw_item": "Salob",
+                        "vol_vendor": 0.12,
+                        "vol_opname": 0,
+                        "handwritten_edited": True,
+                        "row_action": "REMOVED",
+                    },
+                    {
+                        "row_no": "+1",
+                        "tanggal": "2026-08-10",
+                        "raw_item": "Hotmix",
+                        "jml": 2.5,
+                        "vol_opname": 2.5,
+                        "handwritten_edited": True,
+                        "row_action": "ADDED",
+                    },
+                ],
+                "rekap_revisi": [{"raw_item": "Permanen", "vol_revisi": 1.25}],
+            }
+        )
+        p2_payload = json.dumps(
+            {
+                "corrections": [
+                    {
+                        "row_index": 0,
+                        "row_no": "108",
+                        "field": "p",
+                        "crossed_out_printed": 6.1,
+                        "handwritten_replacement": "5,4",
+                    }
+                ]
+            }
+        )
+        mock_post.side_effect = [
+            _FakeResponse(
+                headers={"Content-Type": "text/event-stream"},
+                lines=[
+                    f"data: {json.dumps({'choices': [{'delta': {'content': p1_payload}}]})}",
+                    "data: [DONE]",
+                ],
+            ),
+            _FakeResponse(
+                headers={"Content-Type": "text/event-stream"},
+                lines=[
+                    f"data: {json.dumps({'choices': [{'delta': {'content': p2_payload}}]})}",
+                    "data: [DONE]",
+                ],
+            ),
+        ]
+
+        res, err = extract_opname_form_ocr([_tiny_jpeg_bytes()], "PV", "Scan Opname PV M3", "II.1 Permanen\nII.2 Salob\nII.6 Hotmix")
+        self.assertEqual(err, "")
+        self.assertEqual(mock_post.call_count, 2)
+        pass2_prompt = mock_post.call_args_list[1].kwargs["json"]["messages"][0]["content"][0]["text"]
+        self.assertIn('"108"', pass2_prompt)
+        self.assertNotIn('"109"', pass2_prompt)
+        self.assertNotIn('"+1"', pass2_prompt)
+        self.assertAlmostEqual(res["rows"][0]["p"], 5.4)
+        self.assertEqual(res["rows"][1]["row_action"], "REMOVED")
+        self.assertEqual(res["rows"][2]["row_action"], "ADDED")
+        self.assertEqual(res["rekap_revisi"], [{"raw_item": "Permanen", "vol_revisi": 1.25}])
 
     def test_read_chat_completion_content_aborts_sse_over_max_seconds(self):
         c1, c2 = '{"rows":', '[]}'

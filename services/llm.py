@@ -291,7 +291,9 @@ def _verify_handwritten_edits_on_page(
             },
         }
         for idx, r in enumerate(page_rows)
-        if isinstance(r, dict) and (r.get("handwritten_edited") or r.get("dimension_edited"))
+        if isinstance(r, dict)
+        and (r.get("handwritten_edited") or r.get("dimension_edited"))
+        and str(r.get("row_action") or "").strip().upper() not in ("REMOVED", "ADDED")
     ]
     if not flagged:
         return
@@ -322,7 +324,7 @@ def _verify_handwritten_edits_on_page(
             }
         ],
         "temperature": 0.0,
-        "max_tokens": 1024,
+        "max_tokens": 6144,
         "stream": True,
     }
     t0 = time.monotonic()
@@ -335,7 +337,7 @@ def _verify_handwritten_edits_on_page(
             settings.VIKEY_BASE_URL,
             headers=headers,
             json=body,
-            timeout=(15, 40),
+            timeout=(15, 45),
             stream=True,
         ) as resp:
             if resp.status_code != 200:
@@ -344,7 +346,7 @@ def _verify_handwritten_edits_on_page(
                     flush=True,
                 )
                 return
-            raw_content = _read_chat_completion_content(resp, max_seconds=45.0)
+            raw_content = _read_chat_completion_content(resp, max_seconds=60.0)
         elapsed = time.monotonic() - t0
         if not raw_content:
             return
@@ -422,16 +424,21 @@ def extract_opname_form_ocr(
         f"Context hint from user: Aset='{aset_hint or 'auto'}', Caption='{caption or '-'}'.\n\n"
         f"Instructions:\n"
         f"1. Read header fields if visible: aset (PV/GR/SG/WR/RM/LC/CA/DR/FE), wilayah (W1/W2) and vendor from top header box or rows, minggu (M1/M2/M3/M4/M5).\n"
-        f"2. Read every non-empty row from the main opname table (include the printed `No.` value in `row_no`). IGNORE completely empty blank rows, and IGNORE the bottom `REKAP VOLUME PER ITEM` summary table and signature block. If a page ONLY contains summary rows or signatures, return `{{\"rows\": []}}`.\n"
+        f"2. Read every non-empty row from the main opname table (include the printed `No.` value in `row_no`). IGNORE completely empty blank rows and signature blocks.\n"
         f"   If Tanggal, Minggu, Kode Temuan, or STA/Jalur/Lajur are left blank on subsequent rows at the same location ('ditto'), carry forward the values from the row above.\n"
         f"3. CRITICAL: When a printed number in `P`, `L`, `T`, or `Jml` is scribbled/crossed out (often right-aligned) and a handwritten pen number is written next to it (often on the left), extract ONLY the uncrossed handwritten number into `p`, `l`, `t`, or `jml`, and set `dimension_edited: true` and `handwritten_edited: true`.\n"
         f"   Convert Indonesian comma decimals to dots (e.g. `5,4` -> `5.4`, `1,2` -> `1.2`, `2,9` -> `2.9`). NEVER back-calculate `P`, `L`, `T`, or `Jml` from `Vol. Vendor`.\n"
         f"4. CRITICAL: Leave `vol_opname` as `null` when the `Vol. Opname` column is blank on paper (do NOT copy `vol_vendor` and do NOT mentally multiply dimensions into `vol_opname`). If a handwritten number is explicitly written in `Vol. Opname` (or crossed out in `Vol. Vendor` and replaced), extract both `vol_vendor` and handwritten `vol_opname`, and set `handwritten_edited: true`.\n"
-        f"5. Map `raw_item` strictly using the closest exact keyword or item_key from the BOQ menu below when available.\n"
-        f"6. Return valid JSON ONLY (no markdown fences, no commentary):\n"
+        f"5. ROW ADDITIONS & REMOVALS (`row_action`):\n"
+        f'   - Normal row: `"row_action": ""`.\n'
+        f'   - If an ENTIRE printed row is crossed out horizontally across the row OR marked `0`, `BATAL`, or `HAPUS` in `Vol. Opname` / `Keterangan`, STILL extract its printed `row_no`, `tanggal`, `lokasi`, `raw_item`, and `vol_vendor`, and set `"row_action": "REMOVED"`, `"handwritten_edited": true`, `"vol_opname": 0`.\n'
+        f'   - If a fully handwritten row is written inside `TAMBAHAN LAPANGAN` rows (`+1..+3`) or in the page margin, extract all handwritten fields and set `"row_action": "ADDED"`, `"handwritten_edited": true`.\n'
+        f"6. Map `raw_item` strictly using the closest exact keyword or item_key from the BOQ menu below when available.\n"
+        f'7. IGNORE printed summary rows inside `REKAP VOLUME PER ITEM`, EXCEPT when handwritten totals appear in its `Vol. Revisi` column: put them into top-level `"rekap_revisi": [{{"raw_item": "", "vol_revisi": 0.0}}]`, otherwise `"rekap_revisi": []`. If a page ONLY contains printed summary rows or signatures with no `Vol. Revisi`, return `{{"rows": [], "rekap_revisi": []}}`.\n'
+        f"8. Return valid JSON ONLY (no markdown fences, no commentary):\n"
         f'{{"aset": "", "vendor": "", "wilayah": "", "minggu": "", "rows": ['
-        f'{{"row_no": "", "tanggal": "YYYY-MM-DD", "kode_temuan": "", "wilayah": "", "vendor": "", "lokasi": "", "jalur": "", "lajur": "", "raw_item": "", "p": null, "l": null, "t": null, "jml": null, "vol_vendor": null, "vol_opname": null, "keterangan": "", "dimension_edited": false, "handwritten_edited": false}}'
-        f"]}}\n\n"
+        f'{{"row_no": "", "tanggal": "YYYY-MM-DD", "kode_temuan": "", "wilayah": "", "vendor": "", "lokasi": "", "jalur": "", "lajur": "", "raw_item": "", "p": null, "l": null, "t": null, "jml": null, "vol_vendor": null, "vol_opname": null, "keterangan": "", "dimension_edited": false, "handwritten_edited": false, "row_action": ""}}'
+        f'], "rekap_revisi": []}}\n\n'
         f"OFFICIAL BOQ MENU:\n{boq_menu_text}"
     )
 
@@ -442,7 +449,7 @@ def extract_opname_form_ocr(
 
     pages = page_images[:5]
     total_pages = len(pages)
-    merged: dict = {"aset": "", "vendor": "", "wilayah": "", "minggu": "", "rows": []}
+    merged: dict = {"aset": "", "vendor": "", "wilayah": "", "minggu": "", "rows": [], "rekap_revisi": []}
     last_err = ""
 
     for p_idx, img_bytes in enumerate(pages, start=1):
@@ -460,7 +467,7 @@ def extract_opname_form_ocr(
                 }
             ],
             "temperature": 0.0,
-            "max_tokens": 4096,
+            "max_tokens": 16384,
             "stream": True,
         }
 
@@ -476,7 +483,7 @@ def extract_opname_form_ocr(
                     settings.VIKEY_BASE_URL,
                     headers=headers,
                     json=body,
-                    timeout=(15, 60),
+                    timeout=(15, 75),
                     stream=True,
                 ) as resp:
                     if resp.status_code in [429, 500, 502, 503, 504] and attempt == 0:
@@ -490,7 +497,7 @@ def extract_opname_form_ocr(
                         last_err = f"OCR LLM API Error ({resp.status_code}): {resp.text}"
                         print(f"[Opname OCR] Page {p_idx}/{total_pages} HTTP error: {last_err}", flush=True)
                         break
-                    raw_content = _read_chat_completion_content(resp, max_seconds=90.0)
+                    raw_content = _read_chat_completion_content(resp, max_seconds=120.0)
                 elapsed = time.monotonic() - t0
                 if not raw_content:
                     last_err = f"Page {p_idx}: empty OCR response"
@@ -510,6 +517,9 @@ def extract_opname_form_ocr(
                 if not isinstance(page_rows, list):
                     page_rows = []
                 page_rows = [r for r in page_rows if isinstance(r, dict)]
+                rekap_rev = parsed.get("rekap_revisi") or []
+                if isinstance(rekap_rev, list):
+                    merged["rekap_revisi"].extend(item for item in rekap_rev if isinstance(item, dict))
                 print(
                     f"[Opname OCR] Page {p_idx}/{total_pages} | model={model_name} | img={img_kb}KB | "
                     f"{elapsed:.1f}s | rows={len(page_rows)}",

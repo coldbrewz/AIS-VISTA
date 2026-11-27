@@ -31,6 +31,7 @@ from services.opname_catalog import (
     OFFICIAL_VENDOR_ROSTER,
     check_roster_pairing,
     format_boq_cheat_sheet,
+    fuzzy_fix_ic_akses_typo,
     normalize_asset_code,
     normalize_vendor,
     resolve_boq_item,
@@ -807,7 +808,19 @@ def _commit_opname_slots(
             src_arch_json = json.dumps(arc)
         elif f_src_type in ("XLSX", "WEB_EDITOR") and arc and not xls_arch_json:
             xls_arch_json = json.dumps(arc)
+    active_slots: list[tuple[dict, list[dict]]] = []
     for sl in slots_data:
+        active_ents = [
+            e
+            for e in (sl.get("entries") or [])
+            if str(e.get("row_action") or "").strip().upper() != "REMOVED"
+        ]
+        if active_ents:
+            active_slots.append((sl, active_ents))
+    if not active_slots:
+        raise ValueError("Minimal 1 baris aktif wajib ada untuk disimpan ke DATA_UNTUK_VOL.")
+
+    for sl, entries in active_slots:
         slot_id = sl["slot_id"]
         cycle_key = sl["cycle_key"]
         cycle_m = int(sl["cycle_month"])
@@ -817,7 +830,6 @@ def _commit_opname_slots(
         vendor = sl["vendor"]
         minggu = sl["minggu"]
         table_name = sl["table_name"]
-        entries = sl["entries"]
 
         target_di, drive_id, item_id = _resolve_cycle_target_di(cycle_m, cycle_y)
         excel_rows = []
@@ -1642,6 +1654,90 @@ def process_opname_xlsx_message(
     return True
 
 
+def _load_baseline_slot_entries(
+    aset: str,
+    wilayah: str,
+    vendor: str,
+    minggu: str,
+    cycle_key: str,
+) -> tuple[str, list[dict]]:
+    if not (aset and wilayah in ("W1", "W2") and vendor and minggu and re.fullmatch(r"\d{4}-\d{2}", cycle_key or "")):
+        return "", []
+    yy = int(cycle_key[:4]) % 100
+    mm = int(cycle_key[5:7])
+    slot_id = f"XLS-{yy:02d}{mm:02d}-{aset}-{wilayah}-{vendor}-{minggu}"
+    conn = sqlite3.connect(settings.DB_URL)
+    try:
+        row = conn.execute(
+            "SELECT payload_json FROM opname_slots WHERE UPPER(slot_id) = ? AND status = 'ACTIVE'",
+            (slot_id.upper(),),
+        ).fetchone()
+    finally:
+        conn.close()
+    if not row or not row[0]:
+        return "", []
+    try:
+        sl = json.loads(row[0])
+    except Exception:
+        return "", []
+    if isinstance(sl, list):
+        sl = sl[0] if sl else {}
+    entries = sl.get("entries") if isinstance(sl, dict) else []
+    if not isinstance(entries, list):
+        return "", []
+    return slot_id, [e for e in entries if isinstance(e, dict)]
+
+
+def _match_ocr_row_to_baseline(
+    item_key: str,
+    t_str: str,
+    vol_vnd: float | None,
+    kode_tem: str,
+    p_val: float | None,
+    l_val: float | None,
+    t_val: float | None,
+    j_val: float | None,
+    baseline: list[dict],
+    used_idxs: set[int],
+) -> tuple[int, dict] | None:
+    def _b_vol(b: dict) -> float | None:
+        v = to_float_num(b.get("vol_vendor"))
+        return v if v is not None else to_float_num(b.get("volume"))
+
+    candidates = [(i, b) for i, b in enumerate(baseline) if i not in used_idxs]
+    if vol_vnd is not None:
+        for i, b in candidates:
+            if b.get("tanggal") == t_str and b.get("item_key") == item_key:
+                bv = _b_vol(b)
+                if bv is not None and abs(bv - vol_vnd) <= 0.015:
+                    return i, b
+    k_up = (kode_tem or "").strip().upper()
+    if k_up and k_up != "-":
+        for i, b in candidates:
+            if b.get("item_key") == item_key and str(b.get("kode_temuan") or "").strip().upper() == k_up:
+                return i, b
+    ocr_dims = (p_val, l_val, t_val, j_val)
+    for i, b in candidates:
+        if b.get("tanggal") == t_str and b.get("item_key") == item_key:
+            b_dims = (
+                to_float_num(b.get("p")),
+                to_float_num(b.get("l")),
+                to_float_num(b.get("t")),
+                to_float_num(b.get("jml")),
+            )
+            hits = sum(
+                1
+                for ov, bv in zip(ocr_dims, b_dims)
+                if ov is not None and bv is not None and abs(ov - bv) <= 0.01
+            )
+            if hits >= 2:
+                return i, b
+    for i, b in candidates:
+        if b.get("tanggal") == t_str and b.get("item_key") == item_key:
+            return i, b
+    return None
+
+
 def process_opname_scan_message(
     message: dict,
     reply_chat_id: str,
@@ -1724,6 +1820,34 @@ def process_opname_scan_message(
     if not re.fullmatch(r"M[1-5]", hdr_wk):
         hdr_wk = "M1"
 
+    probe_vend_raw = hdr_vend or next(
+        (str(r.get("vendor") or "").strip() for r in raw_rows if isinstance(r, dict) and r.get("vendor")),
+        "",
+    )
+    probe_wil = hdr_wil if hdr_wil in ("W1", "W2") else next(
+        (
+            str(r.get("wilayah") or "").strip().upper()
+            for r in raw_rows
+            if isinstance(r, dict) and str(r.get("wilayah") or "").strip().upper() in ("W1", "W2")
+        ),
+        "",
+    )
+    first_dt_probe = next(
+        (
+            parse_opname_date_str(str(r.get("tanggal") or ""))
+            for r in raw_rows
+            if isinstance(r, dict) and parse_opname_date_str(str(r.get("tanggal") or ""))
+        ),
+        fallback_dt,
+    )
+    cm_probe, cy_probe = resolve_billing_cycle(datetime.datetime.strptime(first_dt_probe, "%Y-%m-%d").date())
+    _, canon_hdr_vend, _ = normalize_vendor(probe_vend_raw, aset)
+    baseline_slot_id, baseline_entries = _load_baseline_slot_entries(
+        aset, probe_wil, canon_hdr_vend or "", hdr_wk, f"{cy_probe:04d}-{cm_probe:02d}"
+    )
+    used_base_idxs: set[int] = set()
+    anchored_count = 0
+
     parsed_entries: list[dict] = []
     warnings: list[str] = []
     warn_seen: set[str] = set()
@@ -1731,9 +1855,102 @@ def process_opname_scan_message(
     preview_lines: list[str] = []
 
     for i_r, r_obj in enumerate(raw_rows, start=1):
+        if not isinstance(r_obj, dict):
+            continue
+        row_action = str(r_obj.get("row_action") or "").strip().upper()
+        if row_action not in ("ADDED", "REMOVED"):
+            row_action = ""
+
         t_str = parse_opname_date_str(str(r_obj.get("tanggal") or "")) or fallback_dt
+        kode_tem = str(r_obj.get("kode_temuan") or "-").strip() or "-"
         loc = str(r_obj.get("lokasi") or "").strip()
-        wil = str(r_obj.get("wilayah") or hdr_wil or "").strip().upper()
+        raw_wil = str(r_obj.get("wilayah") or hdr_wil or "").strip().upper()
+        jalur = " ".join(p for p in (str(r_obj.get("jalur") or "").strip(), str(r_obj.get("lajur") or "").strip()) if p) or "-"
+
+        v_ok, canon_v, v_err = normalize_vendor(str(r_obj.get("vendor") or hdr_vend), aset)
+        if not v_ok or not canon_v:
+            errors.append(f"Baris {i_r}: {v_err}")
+            continue
+
+        boq_item, b_err = resolve_boq_item(
+            aset,
+            str(r_obj.get("raw_item") or ""),
+            lokasi=loc,
+            wilayah=(raw_wil if raw_wil in ("W1", "W2") else hdr_wil),
+        )
+        if not boq_item:
+            errors.append(f"Baris {i_r}: {b_err}")
+            continue
+
+        p_val = to_float_num(r_obj.get("p"))
+        l_val = to_float_num(r_obj.get("l"))
+        t_val = to_float_num(r_obj.get("t"))
+        j_val = to_float_num(r_obj.get("jml"))
+        vol_opn = to_float_num(r_obj.get("vol_opname"))
+        vol_vnd = to_float_num(r_obj.get("vol_vendor"))
+
+        vendor_p: float | None = None
+        vendor_l: float | None = None
+        vendor_t: float | None = None
+        vendor_jml: float | None = None
+        anchored_from_excel = False
+        base_match = (
+            _match_ocr_row_to_baseline(
+                boq_item.item_key,
+                t_str,
+                vol_vnd,
+                kode_tem,
+                p_val,
+                l_val,
+                t_val,
+                j_val,
+                baseline_entries,
+                used_base_idxs,
+            )
+            if (baseline_entries and row_action != "ADDED")
+            else None
+        )
+        if base_match is not None:
+            b_idx, base = base_match
+            used_base_idxs.add(b_idx)
+            anchored_count += 1
+            t_str = str(base.get("tanggal") or t_str)
+            loc = str(base.get("lokasi") or loc).strip()
+            base_wil = str(base.get("wilayah") or "").strip().upper()
+            if base_wil in ("W1", "W2"):
+                raw_wil = base_wil
+            base_kode = str(base.get("kode_temuan") or "").strip()
+            if base_kode and base_kode != "-":
+                kode_tem = base_kode
+            base_jal = str(base.get("jalur_lajur") or "").strip()
+            if base_jal and base_jal != "-":
+                jalur = base_jal
+            b_vol = to_float_num(base.get("vol_vendor"))
+            if b_vol is None:
+                b_vol = to_float_num(base.get("volume"))
+            if b_vol is not None:
+                vol_vnd = b_vol
+            vendor_p = to_float_num(base.get("p"))
+            vendor_l = to_float_num(base.get("l"))
+            vendor_t = to_float_num(base.get("t"))
+            vendor_jml = to_float_num(base.get("jml"))
+            anchored_from_excel = True
+        else:
+            loc, typo_fix = fuzzy_fix_ic_akses_typo(loc)
+            if typo_fix:
+                print(f"[Opname Scan] Auto-fixed OCR lokasi typo: {typo_fix}", flush=True)
+
+        if anchored_from_excel:
+            boq_fixed, _ = resolve_boq_item(
+                aset,
+                str(r_obj.get("raw_item") or ""),
+                lokasi=loc,
+                wilayah=(raw_wil if raw_wil in ("W1", "W2") else hdr_wil),
+            )
+            if boq_fixed:
+                boq_item = boq_fixed
+
+        wil = raw_wil
         if loc:
             if wil in ("W1", "W2"):
                 w_ok, loc_w, _, w_err = resolve_wilayah(f"{loc} {wil}")
@@ -1760,83 +1977,94 @@ def process_opname_scan_message(
             errors.append(f"Baris {i_r}: Wilayah W1/W2 tidak terbaca.")
             continue
 
-        v_ok, canon_v, v_err = normalize_vendor(str(r_obj.get("vendor") or hdr_vend), aset)
-        if not v_ok or not canon_v:
-            errors.append(f"Baris {i_r}: {v_err}")
-            continue
-
-        boq_item, b_err = resolve_boq_item(aset, str(r_obj.get("raw_item") or ""), lokasi=loc, wilayah=wil)
-        if not boq_item:
-            errors.append(f"Baris {i_r}: {b_err}")
-            continue
-
-        p_val = to_float_num(r_obj.get("p"))
-        l_val = to_float_num(r_obj.get("l"))
-        t_val = to_float_num(r_obj.get("t"))
-        j_val = to_float_num(r_obj.get("jml"))
-        vol_opn = to_float_num(r_obj.get("vol_opname"))
-        vol_vnd = to_float_num(r_obj.get("vol_vendor"))
         dim_edited = bool(r_obj.get("dimension_edited"))
         hw_edited = bool(r_obj.get("handwritten_edited"))
-        strict_dim_vol = compute_strict_dim_volume(
-            boq_item.satuan,
-            p_val,
-            l_val,
-            t_val,
-            j_val,
-            allow_countable_jml=(dim_edited or (p_val is None and l_val is None and t_val is None and j_val is not None)),
-        )
 
-        auto_recalc_dim = False
-        is_edited = hw_edited or dim_edited
-        if vol_opn is not None:
-            vol_num = vol_opn
-        elif strict_dim_vol is not None and strict_dim_vol > 0 and (
-            dim_edited or hw_edited or vol_vnd is None or abs(strict_dim_vol - vol_vnd) > 0.01
-        ):
-            vol_num = strict_dim_vol
-            auto_recalc_dim = True
+        if row_action == "REMOVED":
+            vol_num = 0.0
             is_edited = True
-        elif vol_vnd is not None:
-            vol_num = vol_vnd
-        else:
-            vol_num = compute_geom_volume(boq_item.satuan, p_val, l_val, t_val, j_val) or 0.0
-
-        if vol_num <= 0:
-            errors.append(f"Baris {i_r}: Volume '{boq_item.keyword}' tidak terbaca / <= 0.")
-            continue
-
-        r_ok, r_warn = check_roster_pairing(aset, canon_v, wil)
-        if not r_ok and r_warn not in warn_seen:
-            warn_seen.add(r_warn)
-            warnings.append(r_warn)
-
-        jalur = " ".join(p for p in (str(r_obj.get("jalur") or "").strip(), str(r_obj.get("lajur") or "").strip()) if p) or "-"
-        vol_changed_from_vendor = (vol_vnd is None) or (abs(vol_num - vol_vnd) > 0.001)
-        if auto_recalc_dim and vol_changed_from_vendor:
-            is_jml_only = p_val is None and l_val is None and t_val is None
-            edited_mark = " ✏️ (auto)" if is_jml_only else " ✏️ (auto P×L×T)"
-        elif is_edited and vol_opn is None and not vol_changed_from_vendor:
-            edited_mark = " ⚠️✏️ (cek revisi di web)"
-            u_msg = (
-                f"Baris {i_r}: Coretan terdeteksi pada '{boq_item.keyword}' ({loc or wil}), "
-                f"tetapi angka masih sama dengan Vol. Vendor ({vol_num:g}) - cek di web review."
+            hw_edited = True
+            r_ok, r_warn = check_roster_pairing(aset, canon_v, wil)
+            if not r_ok and r_warn not in warn_seen:
+                warn_seen.add(r_warn)
+                warnings.append(r_warn)
+            preview_lines.append(
+                f"{i_r}. ❌ *{boq_item.keyword}* (`{boq_item.item_key}`) | {loc or wil} | *DIHAPUS / BATAL*"
             )
-            if u_msg not in warn_seen:
-                warn_seen.add(u_msg)
-                warnings.append(u_msg)
-        elif is_edited:
-            edited_mark = " ✏️"
+            rem_msg = (
+                f"Baris {i_r}: '{boq_item.keyword}' ({loc or wil}) ditandai DIHAPUS / BATAL "
+                f"(tidak disimpan ke DATA_UNTUK_VOL kecuali dipulihkan di web review)."
+            )
+            if rem_msg not in warn_seen:
+                warn_seen.add(rem_msg)
+                warnings.append(rem_msg)
         else:
-            edited_mark = ""
-        preview_lines.append(
-            f"{i_r}. *{boq_item.keyword}* (`{boq_item.item_key}`) | {loc or wil} | *{vol_num:g} {boq_item.satuan}*{edited_mark}"
-        )
+            strict_dim_vol = compute_strict_dim_volume(
+                boq_item.satuan,
+                p_val,
+                l_val,
+                t_val,
+                j_val,
+                allow_countable_jml=(dim_edited or (p_val is None and l_val is None and t_val is None and j_val is not None)),
+            )
+
+            auto_recalc_dim = False
+            is_edited = hw_edited or dim_edited
+            if vol_opn is not None:
+                vol_num = vol_opn
+            elif strict_dim_vol is not None and strict_dim_vol > 0 and (
+                dim_edited or hw_edited or vol_vnd is None or abs(strict_dim_vol - vol_vnd) > 0.01
+            ):
+                vol_num = strict_dim_vol
+                auto_recalc_dim = True
+                is_edited = True
+            elif vol_vnd is not None:
+                vol_num = vol_vnd
+            else:
+                vol_num = compute_geom_volume(boq_item.satuan, p_val, l_val, t_val, j_val) or 0.0
+
+            if vol_num <= 0:
+                errors.append(f"Baris {i_r}: Volume '{boq_item.keyword}' tidak terbaca / <= 0.")
+                continue
+
+            r_ok, r_warn = check_roster_pairing(aset, canon_v, wil)
+            if not r_ok and r_warn not in warn_seen:
+                warn_seen.add(r_warn)
+                warnings.append(r_warn)
+
+            vol_changed_from_vendor = (vol_vnd is None) or (abs(vol_num - vol_vnd) > 0.001)
+            if row_action == "ADDED":
+                is_edited = True
+                hw_edited = True
+                preview_lines.append(
+                    f"{i_r}. ➕ *{boq_item.keyword}* (`{boq_item.item_key}`) | {loc or wil} | *{vol_num:g} {boq_item.satuan}* (tambahan)"
+                )
+            else:
+                if auto_recalc_dim and vol_changed_from_vendor:
+                    is_jml_only = p_val is None and l_val is None and t_val is None
+                    edited_mark = " ✏️ (auto)" if is_jml_only else " ✏️ (auto P×L×T)"
+                elif is_edited and vol_opn is None and not vol_changed_from_vendor:
+                    edited_mark = " ⚠️✏️ (cek revisi di web)"
+                    u_msg = (
+                        f"Baris {i_r}: Coretan terdeteksi pada '{boq_item.keyword}' ({loc or wil}), "
+                        f"tetapi angka masih sama dengan Vol. Vendor ({vol_num:g}) - cek di web review."
+                    )
+                    if u_msg not in warn_seen:
+                        warn_seen.add(u_msg)
+                        warnings.append(u_msg)
+                elif is_edited:
+                    edited_mark = " ✏️"
+                else:
+                    edited_mark = ""
+                preview_lines.append(
+                    f"{i_r}. *{boq_item.keyword}* (`{boq_item.item_key}`) | {loc or wil} | *{vol_num:g} {boq_item.satuan}*{edited_mark}"
+                )
+
         parsed_entries.append(
             {
                 "tanggal": t_str,
                 "minggu": hdr_wk,
-                "kode_temuan": str(r_obj.get("kode_temuan") or "-").strip() or "-",
+                "kode_temuan": kode_tem,
                 "wilayah": wil,
                 "vendor": canon_v,
                 "lokasi": loc or "-",
@@ -1851,8 +2079,14 @@ def process_opname_scan_message(
                 "t": t_val,
                 "jml": j_val,
                 "vol_vendor": vol_vnd,
+                "vendor_p": vendor_p,
+                "vendor_l": vendor_l,
+                "vendor_t": vendor_t,
+                "vendor_jml": vendor_jml,
                 "volume": round(vol_num, 4),
                 "handwritten_edited": bool(is_edited),
+                "row_action": row_action,
+                "anchored_from_excel": anchored_from_excel,
                 "material_status": "",
                 "keterangan": str(r_obj.get("keterangan") or "").strip(),
             }
@@ -1863,6 +2097,12 @@ def process_opname_scan_message(
         err_msg = "\n".join(f"- {e}" for e in errors[:10]) if errors else "Baris opname tidak valid."
         send_whatsapp_message(reply_chat_id, f"⚠️ *Scan Opname Perlu Perbaikan*\n{err_msg}", session)
         return
+
+    if anchored_count > 0:
+        print(
+            f"[Opname Scan] Anchored {anchored_count}/{len(parsed_entries)} row(s) to baseline slot {baseline_slot_id}",
+            flush=True,
+        )
 
     slots_by_id: dict[str, dict] = {}
     _, table_name, _ = ASSET_TO_TABLE[aset]
@@ -1888,12 +2128,40 @@ def process_opname_scan_message(
         slots_by_id[sid]["entries"].append(ent_copy)
 
     first_slot = next(iter(slots_by_id.values()))
+    rekap_rev_rows = ocr_res.get("rekap_revisi") or []
+    if isinstance(rekap_rev_rows, list) and rekap_rev_rows:
+        active_by_ik: dict[str, float] = {}
+        for pe in parsed_entries:
+            if pe.get("row_action") != "REMOVED":
+                active_by_ik[pe["item_key"]] = active_by_ik.get(pe["item_key"], 0.0) + float(pe["volume"] or 0.0)
+        first_loc_c = next((pe.get("lokasi", "") for pe in parsed_entries if pe.get("lokasi")), "")
+        first_wil_c = first_slot["wilayah"]
+        for rr in rekap_rev_rows:
+            if not isinstance(rr, dict):
+                continue
+            rev_val = to_float_num(rr.get("vol_revisi"))
+            if rev_val is None or rev_val <= 0:
+                continue
+            rb_item, _ = resolve_boq_item(aset, str(rr.get("raw_item") or ""), lokasi=first_loc_c, wilayah=first_wil_c)
+            if not rb_item:
+                continue
+            calc_sum = round(active_by_ik.get(rb_item.item_key, 0.0), 3)
+            if abs(calc_sum - rev_val) > 0.02:
+                rc_msg = (
+                    f"Rekap '{rb_item.keyword}': total baris aktif ({calc_sum:g} {rb_item.satuan}) "
+                    f"berbeda dengan tulisan tangan Vol. Revisi ({rev_val:g} {rb_item.satuan})."
+                )
+                if rc_msg not in warn_seen:
+                    warn_seen.add(rc_msg)
+                    warnings.append(rc_msg)
+
     scan_id = f"SCAN-{datetime.datetime.now():%y%m%d}-{uuid.uuid4().hex[:4].upper()}"
     print(f"[Opname Scan] Validated {len(parsed_entries)} row(s) into {len(slots_by_id)} slot(s) | staging {scan_id}...")
     src_ext = ".pdf" if is_pdf else ".jpg"
     src_mime = "application/pdf" if is_pdf else "image/jpeg"
     xlsx_mime = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-    xlsx_bytes = build_prefilled_standard_xlsx(aset, first_slot["cycle_month"], first_slot["cycle_year"], parsed_entries)
+    active_for_xlsx = [e for e in parsed_entries if e.get("row_action") != "REMOVED"]
+    xlsx_bytes = build_prefilled_standard_xlsx(aset, first_slot["cycle_month"], first_slot["cycle_year"], active_for_xlsx)
     xlsx_name = f"{aset}_{first_slot['wilayah']}_{first_slot['vendor']}_{first_slot['minggu']}_{scan_id}.xlsx"
     try:
         src_arch_info = _archive_opname_file_to_onedrive(

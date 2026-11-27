@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import difflib
 import re
 from typing import Dict, Iterable, List, Optional, Tuple
 
@@ -323,6 +324,71 @@ def resolve_wilayah(lokasi: str) -> Tuple[bool, Optional[str], Optional[str], st
         None,
         "Lokasi tidak dikenali sebagai KM 26+035..98+200 atau IC/Akses resmi (Bitung..Merak).",
     )
+
+
+_CANONICAL_IC_TOKENS: Tuple[str, ...] = (
+    "Ciujung",
+    "Bitung",
+    "Cikupa",
+    "Kemis",
+    "Balaraja",
+    "Cikande",
+    "Gorda",
+    "Serang",
+    "Cilegon",
+    "Merak",
+    "Papat",
+)
+
+_IGNORED_LOCATION_WORDS = frozenset({
+    "STA", "KM", "RAMP", "OFF", "ON", "AKSES", "GERBANG",
+    "TIMUR", "BARAT", "JALUR", "LAJUR", "BAHU", "REST", "AREA", "TOL", "JALAN",
+})
+
+
+def fuzzy_fix_ic_akses_typo(lokasi: str) -> Tuple[str, Optional[str]]:
+    """Repair minor OCR spelling typos in IC/Akses names when no KM/STA or exact alias matched."""
+    if not lokasi or not lokasi.strip():
+        return lokasi, None
+    if parse_km_meters_list(lokasi):
+        return lokasi, None
+
+    upper_loc = re.sub(r"\s+", " ", lokasi.upper()).strip()
+    for key in BOUNDARY_IC_AKSES:
+        if re.search(rf"(?<![0-9A-Z]){re.escape(key)}(?![0-9A-Z])", upper_loc):
+            return lokasi, None
+    for key in IC_AKSES_WILAYAH:
+        if re.search(rf"(?<![0-9A-Z]){re.escape(key)}(?![0-9A-Z])", upper_loc):
+            return lokasi, None
+
+    out_parts: List[str] = []
+    notes: List[str] = []
+    last_end = 0
+    for m in re.finditer(r"[A-Za-z]{5,}", lokasi):
+        word = m.group(0)
+        if word.upper() in _IGNORED_LOCATION_WORDS:
+            continue
+        w_low = word.lower()
+        best_cand: Optional[str] = None
+        best_ratio = 0.0
+        for cand in _CANONICAL_IC_TOKENS:
+            c_low = cand.lower()
+            if c_low[0] != w_low[0] or c_low == w_low:
+                continue
+            ratio = difflib.SequenceMatcher(None, w_low, c_low).ratio()
+            if ratio >= 0.82 and ratio > best_ratio:
+                best_ratio = ratio
+                best_cand = cand
+        if best_cand:
+            out_parts.append(lokasi[last_end:m.start()])
+            out_parts.append(best_cand)
+            last_end = m.end()
+            notes.append(f"{word} -> {best_cand}")
+
+    if not notes:
+        return lokasi, None
+    out_parts.append(lokasi[last_end:])
+    return "".join(out_parts), ", ".join(notes)
 
 
 def normalize_vendor(raw_vendor: str, aset: str) -> Tuple[bool, Optional[str], str]:

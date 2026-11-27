@@ -461,3 +461,127 @@ class OpnameWebTests(unittest.TestCase):
         self.assertIn("Scan Opname", guide_resp.text)
         for slop_marker in ("linear-gradient", "radial-gradient", "backdrop-filter", "\u2014", "outline: none"):
             self.assertNotIn(slop_marker, guide_resp.text)
+
+    @patch("main.upload_file_to_onedrive", return_value=("OD_EDITED_AR", "https://1drv.ms/u/EDITED_AR"))
+    @patch("main.replace_opname_slot_rows", return_value=(0, 2))
+    @patch("main.ensure_monthly_opname_workbook", return_value=("DRV1", "ITM_NOV", "https://1drv.ms/x/NOV"))
+    def test_review_ui_renders_ocr_banner_diffs_restore_and_save_excludes_removed(
+        self,
+        mock_ensure,
+        mock_replace,
+        mock_upload_arc,
+    ):
+        scan_id = "SCAN-261127-WEB1"
+        slots_payload = [
+            {
+                "slot_id": "XLS-2611-PV-W1-MIJ-M3",
+                "cycle_key": "2026-11",
+                "cycle_month": 11,
+                "cycle_year": 2026,
+                "aset": "PV",
+                "wilayah": "W1",
+                "vendor": "MIJ",
+                "minggu": "M3",
+                "table_name": "TBL_LOG_PV",
+                "entries": [
+                    {
+                        "tanggal": "2026-11-18",
+                        "kode_temuan": "181126PV001",
+                        "wilayah": "W1",
+                        "vendor": "MIJ",
+                        "lokasi": "KM 45+200",
+                        "jalur_lajur": "A L1",
+                        "item_key": "II.1",
+                        "keyword": "Permanen",
+                        "satuan": "m3",
+                        "p": 5.4,
+                        "l": 2.4,
+                        "t": 0.07,
+                        "vol_vendor": 1.025,
+                        "vendor_p": 6.1,
+                        "volume": 0.907,
+                        "handwritten_edited": True,
+                        "row_action": "",
+                    },
+                    {
+                        "tanggal": "2026-11-18",
+                        "kode_temuan": "181126PV002",
+                        "wilayah": "W1",
+                        "vendor": "MIJ",
+                        "lokasi": "KM 45+300",
+                        "jalur_lajur": "A L1",
+                        "item_key": "II.2",
+                        "keyword": "Salob",
+                        "satuan": "m3",
+                        "vol_vendor": 0.2,
+                        "volume": 0.0,
+                        "handwritten_edited": True,
+                        "row_action": "REMOVED",
+                    },
+                    {
+                        "tanggal": "2026-11-18",
+                        "kode_temuan": "-",
+                        "wilayah": "W1",
+                        "vendor": "MIJ",
+                        "lokasi": "KM 46+100",
+                        "jalur_lajur": "B L1",
+                        "item_key": "II.6",
+                        "keyword": "Hotmix",
+                        "satuan": "Ton",
+                        "jml": 2.5,
+                        "volume": 2.5,
+                        "handwritten_edited": True,
+                        "row_action": "ADDED",
+                    },
+                ],
+            }
+        ]
+        conn = sqlite3.connect(self.db_path)
+        conn.execute(
+            "INSERT INTO opname_pending (pending_id, kind, aset, payload_json, xlsx_path, source_path, warnings_text, status, created_at) VALUES (?, 'SCAN_OCR', 'PV', ?, '{}', '{}', '', 'PENDING', ?)",
+            (scan_id, main.json.dumps(slots_payload), datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")),
+        )
+        conn.commit()
+        conn.close()
+
+        tok = make_opname_token(scan_id)
+        html_resp = self.client.get(f"/review/{scan_id}?token={tok}")
+        self.assertEqual(html_resp.status_code, 200)
+        for marker in ('id="ocrReviewBanner"', "Revisi Tangan OCR", "Pulihkan Baris", "tag-added", "tag-removed", "diff-strip"):
+            self.assertIn(marker, html_resp.text)
+
+        all_removed_resp = self.client.post(
+            f"/api/opname/review/{scan_id}/save?token={tok}",
+            json={
+                "aset": "PV",
+                "wilayah": "W1",
+                "vendor": "MIJ",
+                "minggu": "M3",
+                "entries": [
+                    {
+                        "tanggal": "2026-11-18",
+                        "lokasi": "KM 45+300",
+                        "item_key": "II.2",
+                        "volume": 0,
+                        "row_action": "REMOVED",
+                    }
+                ],
+            },
+        )
+        self.assertEqual(all_removed_resp.status_code, 422)
+
+        save_resp = self.client.post(
+            f"/api/opname/review/{scan_id}/save?token={tok}",
+            json={
+                "aset": "PV",
+                "wilayah": "W1",
+                "vendor": "MIJ",
+                "minggu": "M3",
+                "entries": slots_payload[0]["entries"],
+            },
+        )
+        self.assertEqual(save_resp.status_code, 200)
+        mock_replace.assert_called_once()
+        excel_rows = mock_replace.call_args[0][3]
+        self.assertEqual(len(excel_rows), 2)
+        self.assertEqual([r[8] for r in excel_rows], ["II.1", "II.6"])

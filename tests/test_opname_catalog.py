@@ -6,6 +6,7 @@ from services.opname_catalog import (
     OFFICIAL_VENDOR_ROSTER,
     VALID_OPNAME_ASSETS,
     check_roster_pairing,
+    fuzzy_fix_ic_akses_typo,
     get_boq_menu_for_asset,
     normalize_asset_code,
     normalize_vendor,
@@ -172,6 +173,23 @@ class OpnameCatalogTests(unittest.TestCase):
         ok_mismatch, msg_bad = check_roster_pairing("PV", "MIJ", "W2")
         self.assertFalse(ok_mismatch)
         self.assertIn("W1", msg_bad)
+
+    def test_fuzzy_fix_ic_akses_typo(self):
+        self.assertEqual(
+            fuzzy_fix_ic_akses_typo("STA Cilujung Ramp Off"),
+            ("STA Ciujung Ramp Off", "Cilujung -> Ciujung"),
+        )
+        self.assertEqual(
+            fuzzy_fix_ic_akses_typo("STA Clujung Ramp Off"),
+            ("STA Ciujung Ramp Off", "Clujung -> Ciujung"),
+        )
+        self.assertEqual(
+            fuzzy_fix_ic_akses_typo("Balarja Timur"),
+            ("Balaraja Timur", "Balarja -> Balaraja"),
+        )
+        self.assertEqual(fuzzy_fix_ic_akses_typo("KM 45+200 A"), ("KM 45+200 A", None))
+        self.assertEqual(fuzzy_fix_ic_akses_typo("STA Ciujung Ramp Off"), ("STA Ciujung Ramp Off", None))
+        self.assertEqual(fuzzy_fix_ic_akses_typo("STA Pintu Air Ramp Off"), ("STA Pintu Air Ramp Off", None))
 
 
 if __name__ == "__main__":
