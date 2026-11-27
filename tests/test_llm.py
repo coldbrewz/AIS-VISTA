@@ -440,6 +440,94 @@ class OpnameOCRStreamTests(unittest.TestCase):
         self.assertIn("ctype=application/json", msg)
         self.assertIn("sample=' '", msg)
 
+    @patch("services.llm.requests.post")
+    def test_opname_ocr_skips_pass2_for_baik_check_and_verifies_lokasi_edit(self, mock_post):
+        clean_payload = json.dumps(
+            {
+                "aset": "PV",
+                "vendor": "MIJ",
+                "wilayah": "W1",
+                "opname_ke": "2",
+                "minggu": "",
+                "rows": [
+                    {
+                        "row_no": "1",
+                        "tanggal": "2026-08-14",
+                        "tanggal_temuan": "2026-08-02",
+                        "lokasi": "KM 45+200",
+                        "raw_item": "Permanen",
+                        "vol_vendor": 1.0,
+                        "vol_opname": None,
+                        "hasil_baik": True,
+                        "lokasi_edited": False,
+                        "handwritten_edited": False,
+                    }
+                ],
+            }
+        )
+        mock_post.return_value = _FakeResponse(
+            headers={"Content-Type": "text/event-stream"},
+            lines=[
+                f"data: {json.dumps({'choices': [{'delta': {'content': clean_payload}}]})}",
+                "data: [DONE]",
+            ],
+        )
+        res_clean, err_clean = extract_opname_form_ocr([_tiny_jpeg_bytes()], "PV", "Scan Opname PV OP2", "II.1 Permanen")
+        self.assertEqual(err_clean, "")
+        self.assertEqual(mock_post.call_count, 1)
+        self.assertEqual(res_clean["opname_ke"], "2")
+        self.assertTrue(res_clean["rows"][0]["hasil_baik"])
+
+        mock_post.reset_mock()
+        p1_loc = json.dumps(
+            {
+                "aset": "PV",
+                "vendor": "MIJ",
+                "wilayah": "W1",
+                "opname_ke": "3",
+                "rows": [
+                    {
+                        "row_no": "2",
+                        "tanggal": "2026-08-15",
+                        "lokasi": "Gorda",
+                        "raw_item": "Permanen",
+                        "vol_vendor": 0.5,
+                        "lokasi_edited": True,
+                        "handwritten_edited": False,
+                    }
+                ],
+            }
+        )
+        p2_loc = json.dumps(
+            {
+                "corrections": [
+                    {
+                        "row_index": 0,
+                        "row_no": "2",
+                        "field": "lokasi",
+                        "crossed_out_printed": "Gorda",
+                        "handwritten_replacement": "IC Cikupa",
+                    }
+                ]
+            }
+        )
+        mock_post.side_effect = [
+            _FakeResponse(
+                headers={"Content-Type": "text/event-stream"},
+                lines=[f"data: {json.dumps({'choices': [{'delta': {'content': p1_loc}}]})}", "data: [DONE]"],
+            ),
+            _FakeResponse(
+                headers={"Content-Type": "text/event-stream"},
+                lines=[f"data: {json.dumps({'choices': [{'delta': {'content': p2_loc}}]})}", "data: [DONE]"],
+            ),
+        ]
+        res_loc, err_loc = extract_opname_form_ocr([_tiny_jpeg_bytes()], "PV", "Scan Opname PV OP3", "II.1 Permanen")
+        self.assertEqual(err_loc, "")
+        self.assertEqual(mock_post.call_count, 2)
+        self.assertEqual(res_loc["rows"][0]["lokasi"], "IC Cikupa")
+        self.assertTrue(res_loc["rows"][0]["lokasi_edited"])
+        self.assertTrue(res_loc["rows"][0]["handwritten_edited"])
+
 
 if __name__ == "__main__":
     unittest.main()

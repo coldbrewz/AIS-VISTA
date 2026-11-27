@@ -20,6 +20,7 @@ from services.message_utils import (
     extract_message_id,
     extract_scan_opname_hint,
     has_xlsx_opname_trigger,
+    normalize_opname_batch,
     parse_opname_date_str,
     reconcile_date_with_message_time,
     resolve_billing_cycle,
@@ -618,6 +619,23 @@ def init_db():
                  row_count INTEGER,
                  created_at TEXT
                  )''')
+    c.execute('''CREATE TABLE IF NOT EXISTS opname_deferred_disposal (
+                 defer_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                 source_slot_id TEXT,
+                 cycle_key TEXT,
+                 aset TEXT,
+                 wilayah TEXT,
+                 vendor TEXT,
+                 tanggal TEXT,
+                 lokasi TEXT,
+                 item_key TEXT,
+                 keyword TEXT,
+                 volume REAL,
+                 satuan TEXT,
+                 keterangan TEXT,
+                 status TEXT DEFAULT 'PENDING',
+                 created_at TEXT
+                 )''')
     # Upgrade older schemas gracefully if columns missing
     existing_cols = {row[1] for row in c.execute("PRAGMA table_info(opname_entries)").fetchall()}
     if "drive_id" not in existing_cols:
@@ -739,6 +757,7 @@ def _serialize_slots(slots: list[XlsxSlotBatch]) -> str:
                         "tanggal": e["tanggal"],
                         "minggu": e.get("minggu", sl.minggu),
                         "kode_temuan": e.get("kode_temuan", "-"),
+                        "tanggal_temuan": e.get("tanggal_temuan", e.get("kode_temuan", "-")),
                         "wilayah": e["wilayah"],
                         "vendor": e["vendor"],
                         "lokasi": e["lokasi"],
@@ -752,6 +771,7 @@ def _serialize_slots(slots: list[XlsxSlotBatch]) -> str:
                         "t": e.get("t"),
                         "jml": e.get("jml"),
                         "volume": e["volume"],
+                        "hasil_baik": e.get("hasil_baik"),
                         "material_status": e.get("material_status", ""),
                         "keterangan": e.get("keterangan", ""),
                     }
@@ -808,7 +828,7 @@ def _commit_opname_slots(
             src_arch_json = json.dumps(arc)
         elif f_src_type in ("XLSX", "WEB_EDITOR") and arc and not xls_arch_json:
             xls_arch_json = json.dumps(arc)
-    active_slots: list[tuple[dict, list[dict]]] = []
+    active_slots: list[tuple[dict, list[dict], list[dict]]] = []
     for sl in slots_data:
         active_ents = [
             e
@@ -816,11 +836,29 @@ def _commit_opname_slots(
             if str(e.get("row_action") or "").strip().upper() != "REMOVED"
         ]
         if active_ents:
-            active_slots.append((sl, active_ents))
+            disp_rows: list[dict] = []
+            disp_seen: set[tuple[str, str, str]] = set()
+            for is_explicit, src_list in ((False, sl.get("entries") or []), (True, sl.get("deferred_disposals") or [])):
+                for de in src_list:
+                    if not isinstance(de, dict):
+                        continue
+                    is_rem = is_explicit or str(de.get("row_action") or "").strip().upper() == "REMOVED"
+                    rem_rsn = str(de.get("removal_reason") or "").strip().upper()
+                    ket_low = str(de.get("keterangan") or "").lower()
+                    if is_rem and (rem_rsn == "DISPOSAL" or "disposal" in ket_low):
+                        dk = (
+                            str(de.get("tanggal") or ""),
+                            str(de.get("lokasi") or "-").strip().upper(),
+                            str(de.get("item_key") or ""),
+                        )
+                        if dk[2] and dk not in disp_seen:
+                            disp_seen.add(dk)
+                            disp_rows.append(de)
+            active_slots.append((sl, active_ents, disp_rows))
     if not active_slots:
         raise ValueError("Minimal 1 baris aktif wajib ada untuk disimpan ke DATA_UNTUK_VOL.")
 
-    for sl, entries in active_slots:
+    for sl, entries, disposal_rows in active_slots:
         slot_id = sl["slot_id"]
         cycle_key = sl["cycle_key"]
         cycle_m = int(sl["cycle_month"])
@@ -893,6 +931,21 @@ def _commit_opname_slots(
             (slot_id.upper(),),
         )
         for ent in entries:
+            ent_loc_u = str(ent.get("lokasi") or "-").strip().upper()
+            c.execute(
+                """
+                UPDATE opname_deferred_disposal
+                SET status = 'RESOLVED'
+                WHERE status = 'PENDING'
+                  AND aset = ?
+                  AND wilayah = ?
+                  AND vendor = ?
+                  AND item_key = ?
+                  AND UPPER(COALESCE(source_slot_id, '')) != ?
+                  AND (UPPER(COALESCE(lokasi, '-')) = ? OR tanggal = ?)
+                """,
+                (aset, wilayah, vendor, ent["item_key"], slot_id.upper(), ent_loc_u, ent["tanggal"]),
+            )
             c.execute(
                 """
                 INSERT INTO opname_entries (
@@ -919,6 +972,44 @@ def _commit_opname_slots(
                     item_id,
                 ),
             )
+        for de in disposal_rows:
+            de_tgl = str(de.get("tanggal") or "")
+            de_loc = str(de.get("lokasi") or "-").strip() or "-"
+            de_ik = str(de.get("item_key") or "")
+            dup = c.execute(
+                """
+                SELECT defer_id FROM opname_deferred_disposal
+                WHERE UPPER(source_slot_id) = ? AND tanggal = ? AND UPPER(lokasi) = ? AND item_key = ? AND status = 'PENDING'
+                """,
+                (slot_id.upper(), de_tgl, de_loc.upper(), de_ik),
+            ).fetchone()
+            if not dup:
+                de_vol = to_float_num(de.get("vol_vendor"))
+                if de_vol is None:
+                    de_vol = to_float_num(de.get("volume")) or 0.0
+                c.execute(
+                    """
+                    INSERT INTO opname_deferred_disposal (
+                        source_slot_id, cycle_key, aset, wilayah, vendor, tanggal, lokasi,
+                        item_key, keyword, volume, satuan, keterangan, status, created_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'PENDING', ?)
+                    """,
+                    (
+                        slot_id,
+                        cycle_key,
+                        aset,
+                        wilayah,
+                        vendor,
+                        de_tgl,
+                        de_loc,
+                        de_ik,
+                        str(de.get("keyword") or de_ik),
+                        float(de_vol),
+                        str(de.get("satuan") or ""),
+                        str(de.get("keterangan") or "disposal"),
+                        created_now,
+                    ),
+                )
         for f_src_type, arc in archive_items:
             if arc and (arc.get("item_id") or arc.get("web_url")):
                 c.execute(
@@ -1016,7 +1107,7 @@ def _format_commit_reply(results: list[dict], source_label: str) -> str:
         edit_line = f"\n✏️ Edit ulang (HP/PC): {edit_url}" if edit_url else ""
         blocks.append(
             f"\nID: `{res['slot_id']}` ({action_note})\n"
-            f"Siklus: {month_names[cycle_m - 1]} {cycle_y} | Minggu: *{res['minggu']}*\n"
+            f"Siklus: {month_names[cycle_m - 1]} {cycle_y} | Opname: *{res['minggu']}*\n"
             f"Aset / Wilayah / Vendor: *{res['aset']}* / *{res['wilayah']}* / *{res['vendor']}*\n"
             f"Total Baris: {res['appended']}\n"
             f"{item_lines}{edit_line}\n"
@@ -1718,31 +1809,62 @@ def _load_baseline_slot_entries(
     minggu: str,
     cycle_key: str,
 ) -> tuple[str, list[dict]]:
-    if not (aset and wilayah in ("W1", "W2") and vendor and minggu and re.fullmatch(r"\d{4}-\d{2}", cycle_key or "")):
+    if not (aset and wilayah in ("W1", "W2") and vendor and re.fullmatch(r"\d{4}-\d{2}", cycle_key or "")):
         return "", []
     yy = int(cycle_key[:4]) % 100
     mm = int(cycle_key[5:7])
-    slot_id = f"XLS-{yy:02d}{mm:02d}-{aset}-{wilayah}-{vendor}-{minggu}"
+    candidate_ids: list[str] = []
+    if minggu:
+        candidate_ids.append(f"XLS-{yy:02d}{mm:02d}-{aset}-{wilayah}-{vendor}-{minggu}")
+    full_id = f"XLS-{yy:02d}{mm:02d}-{aset}-{wilayah}-{vendor}-FULL"
+    if full_id not in candidate_ids:
+        candidate_ids.append(full_id)
+
     conn = sqlite3.connect(settings.DB_URL)
     try:
-        row = conn.execute(
-            "SELECT payload_json FROM opname_slots WHERE UPPER(slot_id) = ? AND status = 'ACTIVE'",
-            (slot_id.upper(),),
-        ).fetchone()
+        for cand in candidate_ids:
+            row = conn.execute(
+                "SELECT slot_id, payload_json FROM opname_slots WHERE UPPER(slot_id) = ? AND status = 'ACTIVE'",
+                (cand.upper(),),
+            ).fetchone()
+            if row and row[1]:
+                try:
+                    sl = json.loads(row[1])
+                except Exception:
+                    sl = {}
+                if isinstance(sl, list):
+                    sl = sl[0] if sl else {}
+                entries = sl.get("entries") if isinstance(sl, dict) else []
+                if isinstance(entries, list) and entries:
+                    return str(row[0] or cand), [e for e in entries if isinstance(e, dict)]
+
+        rows = conn.execute(
+            """
+            SELECT slot_id, payload_json
+            FROM opname_slots
+            WHERE cycle_key = ? AND aset = ? AND wilayah = ? AND vendor = ? AND status = 'ACTIVE'
+            ORDER BY updated_at DESC, slot_id ASC
+            """,
+            (cycle_key, aset, wilayah, vendor),
+        ).fetchall()
     finally:
         conn.close()
-    if not row or not row[0]:
-        return "", []
-    try:
-        sl = json.loads(row[0])
-    except Exception:
-        return "", []
-    if isinstance(sl, list):
-        sl = sl[0] if sl else {}
-    entries = sl.get("entries") if isinstance(sl, dict) else []
-    if not isinstance(entries, list):
-        return "", []
-    return slot_id, [e for e in entries if isinstance(e, dict)]
+
+    merged_entries: list[dict] = []
+    first_sid = ""
+    for sid, p_json in rows:
+        try:
+            sl = json.loads(p_json or "{}")
+        except Exception:
+            continue
+        if isinstance(sl, list):
+            sl = sl[0] if sl else {}
+        entries = sl.get("entries") if isinstance(sl, dict) else []
+        if isinstance(entries, list) and entries:
+            if not first_sid:
+                first_sid = str(sid or "")
+            merged_entries.extend(e for e in entries if isinstance(e, dict))
+    return first_sid, merged_entries
 
 
 def _match_ocr_row_to_baseline(
@@ -1771,7 +1893,8 @@ def _match_ocr_row_to_baseline(
     k_up = (kode_tem or "").strip().upper()
     if k_up and k_up != "-":
         for i, b in candidates:
-            if b.get("item_key") == item_key and str(b.get("kode_temuan") or "").strip().upper() == k_up:
+            b_kt = str(b.get("tanggal_temuan") or b.get("kode_temuan") or "").strip().upper()
+            if b.get("item_key") == item_key and b_kt == k_up:
                 return i, b
     ocr_dims = (p_val, l_val, t_val, j_val)
     for i, b in candidates:
@@ -1793,10 +1916,11 @@ def _match_ocr_row_to_baseline(
         if b.get("tanggal") == t_str and b.get("item_key") == item_key:
             return i, b
 
-    # Pass 5: item-change fallback (Permanen -> Salob, etc.) using Kode Temuan, Vol. Vendor, or >=2 dims
+    # Pass 5: item-change fallback (Permanen -> Salob, etc.) using Tanggal/Kode Temuan, Vol. Vendor, or >=2 dims
     if k_up and k_up != "-":
         for i, b in candidates:
-            if str(b.get("kode_temuan") or "").strip().upper() == k_up:
+            b_kt = str(b.get("tanggal_temuan") or b.get("kode_temuan") or "").strip().upper()
+            if b_kt == k_up:
                 return i, b
     if vol_vnd is not None:
         for i, b in candidates:
@@ -1900,9 +2024,8 @@ def process_opname_scan_message(
     fallback_dt = datetime.datetime.now().strftime("%Y-%m-%d")
     hdr_vend = str(ocr_res.get("vendor") or "").strip()
     hdr_wil = str(ocr_res.get("wilayah") or scan_hint.get("wilayah") or "").strip().upper()
-    hdr_wk = str(ocr_res.get("minggu") or scan_hint.get("minggu") or "M1").strip().upper()
-    if not re.fullmatch(r"M[1-5]", hdr_wk):
-        hdr_wk = "M1"
+    raw_batch_hint = ocr_res.get("opname_ke") or ocr_res.get("minggu") or scan_hint.get("minggu")
+    hdr_wk = normalize_opname_batch(raw_batch_hint, default="OP1")
 
     probe_vend_raw = hdr_vend or next(
         (str(r.get("vendor") or "").strip() for r in raw_rows if isinstance(r, dict) and r.get("vendor")),
@@ -1935,6 +2058,13 @@ def process_opname_scan_message(
     parsed_entries: list[dict] = []
     warnings: list[str] = []
     warn_seen: set[str] = set()
+    if baseline_slot_id and baseline_slot_id.upper().endswith("-FULL") and hdr_wk != "FULL":
+        full_note = (
+            f"Baseline Excel tersimpan sebagai slot penuh ({baseline_slot_id}); "
+            f"bila scan {hdr_wk} hanya sebagian tanggal, /undo {baseline_slot_id} setelah simpan agar tidak double-count."
+        )
+        warn_seen.add(full_note)
+        warnings.append(full_note)
     errors: list[str] = []
     preview_lines: list[str] = []
 
@@ -1946,10 +2076,21 @@ def process_opname_scan_message(
             row_action = ""
 
         t_str = parse_opname_date_str(str(r_obj.get("tanggal") or "")) or fallback_dt
-        kode_tem = str(r_obj.get("kode_temuan") or "-").strip() or "-"
+        raw_tem_v = str(r_obj.get("tanggal_temuan") or r_obj.get("kode_temuan") or "-").strip() or "-"
+        kode_tem = parse_opname_date_str(raw_tem_v) or raw_tem_v
+        ket_raw = str(r_obj.get("keterangan") or "").strip()
         loc = str(r_obj.get("lokasi") or "").strip()
         raw_wil = str(r_obj.get("wilayah") or hdr_wil or "").strip().upper()
         jalur = " ".join(p for p in (str(r_obj.get("jalur") or "").strip(), str(r_obj.get("lajur") or "").strip()) if p) or "-"
+        lokasi_edited = bool(r_obj.get("lokasi_edited"))
+        m_ket_loc = re.search(r"(?i)\b(?:sta|lok(?:asi)?)\s*[:=]\s*([^;,\n]+)", ket_raw)
+        if m_ket_loc:
+            ket_loc_cand = m_ket_loc.group(1).strip()
+            if ket_loc_cand and ket_loc_cand.upper() not in loc.upper():
+                loc = ket_loc_cand
+                lokasi_edited = True
+        raw_baik = r_obj.get("hasil_baik")
+        hasil_baik: bool | None = raw_baik if isinstance(raw_baik, bool) else None
 
         v_ok, canon_v, v_err = normalize_vendor(str(r_obj.get("vendor") or hdr_vend), aset)
         if not v_ok or not canon_v:
@@ -1980,6 +2121,7 @@ def process_opname_scan_message(
         vendor_jml: float | None = None
         vendor_item_key = ""
         vendor_keyword = ""
+        vendor_lokasi = ""
         anchored_from_excel = False
         base_match = (
             _match_ocr_row_to_baseline(
@@ -2002,16 +2144,27 @@ def process_opname_scan_message(
             used_base_idxs.add(b_idx)
             anchored_count += 1
             t_str = str(base.get("tanggal") or t_str)
-            loc = str(base.get("lokasi") or loc).strip()
-            base_wil = str(base.get("wilayah") or "").strip().upper()
-            if base_wil in ("W1", "W2"):
-                raw_wil = base_wil
-            base_kode = str(base.get("kode_temuan") or "").strip()
+            base_loc = str(base.get("lokasi") or "").strip()
+            if lokasi_edited:
+                loc, typo_fix = fuzzy_fix_ic_akses_typo(loc)
+                if typo_fix:
+                    print(f"[Opname Scan] Auto-fixed OCR lokasi typo: {typo_fix}", flush=True)
+                if base_loc and loc and base_loc.lower() != loc.lower():
+                    vendor_lokasi = base_loc
+                elif not loc:
+                    loc = base_loc
+            else:
+                if base_loc:
+                    loc = base_loc
+                base_wil = str(base.get("wilayah") or "").strip().upper()
+                if base_wil in ("W1", "W2"):
+                    raw_wil = base_wil
+                base_jal = str(base.get("jalur_lajur") or "").strip()
+                if base_jal and base_jal != "-":
+                    jalur = base_jal
+            base_kode = str(base.get("tanggal_temuan") or base.get("kode_temuan") or "").strip()
             if base_kode and base_kode != "-":
                 kode_tem = base_kode
-            base_jal = str(base.get("jalur_lajur") or "").strip()
-            if base_jal and base_jal != "-":
-                jalur = base_jal
             b_vol = to_float_num(base.get("vol_vendor"))
             if b_vol is None:
                 b_vol = to_float_num(base.get("volume"))
@@ -2054,12 +2207,14 @@ def process_opname_scan_message(
 
         wil = raw_wil
         if loc:
-            if wil in ("W1", "W2"):
+            direct_ok, direct_wil, _, _ = resolve_wilayah(loc)
+            if lokasi_edited and direct_ok and direct_wil:
+                wil = direct_wil
+            elif wil in ("W1", "W2"):
                 w_ok, loc_w, _, w_err = resolve_wilayah(f"{loc} {wil}")
                 if not w_ok or not loc_w:
                     errors.append(f"Baris {i_r}: {w_err}")
                     continue
-                direct_ok, _, _, _ = resolve_wilayah(loc)
                 if not direct_ok:
                     w_msg = (
                         f"Baris {i_r}: Lokasi '{loc}' tidak cocok daftar KM/IC, "
@@ -2080,23 +2235,35 @@ def process_opname_scan_message(
             continue
 
         dim_edited = bool(r_obj.get("dimension_edited"))
-        hw_edited = bool(r_obj.get("handwritten_edited")) or item_edited
+        hw_edited = bool(r_obj.get("handwritten_edited")) or item_edited or lokasi_edited
+        removal_reason = ""
 
         if row_action == "REMOVED":
             vol_num = 0.0
             is_edited = True
             hw_edited = True
+            is_disposal = "disposal" in ket_raw.lower()
+            removal_reason = "DISPOSAL" if is_disposal else "REMOVED"
             r_ok, r_warn = check_roster_pairing(aset, canon_v, wil)
             if not r_ok and r_warn not in warn_seen:
                 warn_seen.add(r_warn)
                 warnings.append(r_warn)
-            preview_lines.append(
-                f"{i_r}. ❌ *{boq_item.keyword}* (`{boq_item.item_key}`) | {loc or wil} | *DIHAPUS / BATAL*"
-            )
-            rem_msg = (
-                f"Baris {i_r}: '{boq_item.keyword}' ({loc or wil}) ditandai DIHAPUS / BATAL "
-                f"(tidak disimpan ke DATA_UNTUK_VOL kecuali dipulihkan di web review)."
-            )
+            if is_disposal:
+                preview_lines.append(
+                    f"{i_r}. ⏭️ *{boq_item.keyword}* (`{boq_item.item_key}`) | {loc or wil} | *TUNDA DISPOSAL* (masuk opname berikutnya)"
+                )
+                rem_msg = (
+                    f"Baris {i_r}: '{boq_item.keyword}' ({loc or wil}) ditandai TUNDA DISPOSAL "
+                    f"(dikeluarkan dari opname ini dan diingatkan untuk opname berikutnya)."
+                )
+            else:
+                preview_lines.append(
+                    f"{i_r}. ❌ *{boq_item.keyword}* (`{boq_item.item_key}`) | {loc or wil} | *DIHAPUS / BATAL*"
+                )
+                rem_msg = (
+                    f"Baris {i_r}: '{boq_item.keyword}' ({loc or wil}) ditandai DIHAPUS / BATAL "
+                    f"(tidak disimpan ke DATA_UNTUK_VOL kecuali dipulihkan di web review)."
+                )
             if rem_msg not in warn_seen:
                 warn_seen.add(rem_msg)
                 warnings.append(rem_msg)
@@ -2134,19 +2301,30 @@ def process_opname_scan_message(
                 warn_seen.add(r_warn)
                 warnings.append(r_warn)
 
+            if hasil_baik is False:
+                baik_msg = (
+                    f"Baris {i_r}: Hasil pekerjaan '{boq_item.keyword}' ({loc or wil}) "
+                    f"ditandai TDK BAIK - periksa di web review."
+                )
+                if baik_msg not in warn_seen:
+                    warn_seen.add(baik_msg)
+                    warnings.append(baik_msg)
+
             vol_changed_from_vendor = (vol_vnd is None) or (abs(vol_num - vol_vnd) > 0.001)
             item_mark = f" (item: {vendor_keyword}→{boq_item.keyword})" if vendor_keyword else ""
+            loc_mark = f" (lok: {vendor_lokasi}→{loc})" if vendor_lokasi else ""
+            baik_mark = " ⚠️ TDK BAIK" if hasil_baik is False else ""
             if row_action == "ADDED":
                 is_edited = True
                 hw_edited = True
                 preview_lines.append(
-                    f"{i_r}. ➕ *{boq_item.keyword}* (`{boq_item.item_key}`) | {loc or wil} | *{vol_num:g} {boq_item.satuan}* (tambahan)"
+                    f"{i_r}. ➕ *{boq_item.keyword}* (`{boq_item.item_key}`) | {loc or wil} | *{vol_num:g} {boq_item.satuan}* (tambahan){baik_mark}"
                 )
             else:
                 if auto_recalc_dim and vol_changed_from_vendor:
                     is_jml_only = p_val is None and l_val is None and t_val is None
                     edited_mark = " ✏️ (auto)" if is_jml_only else " ✏️ (auto P×L×T)"
-                elif is_edited and not item_edited and vol_opn is None and not vol_changed_from_vendor:
+                elif is_edited and not item_edited and not lokasi_edited and vol_opn is None and not vol_changed_from_vendor:
                     edited_mark = " ⚠️✏️ (cek revisi di web)"
                     u_msg = (
                         f"Baris {i_r}: Coretan terdeteksi pada '{boq_item.keyword}' ({loc or wil}), "
@@ -2160,7 +2338,7 @@ def process_opname_scan_message(
                 else:
                     edited_mark = ""
                 preview_lines.append(
-                    f"{i_r}. *{boq_item.keyword}* (`{boq_item.item_key}`) | {loc or wil} | *{vol_num:g} {boq_item.satuan}*{edited_mark}{item_mark}"
+                    f"{i_r}. *{boq_item.keyword}* (`{boq_item.item_key}`) | {loc or wil} | *{vol_num:g} {boq_item.satuan}*{edited_mark}{item_mark}{loc_mark}{baik_mark}"
                 )
 
         parsed_entries.append(
@@ -2168,9 +2346,12 @@ def process_opname_scan_message(
                 "tanggal": t_str,
                 "minggu": hdr_wk,
                 "kode_temuan": kode_tem,
+                "tanggal_temuan": kode_tem,
                 "wilayah": wil,
                 "vendor": canon_v,
                 "lokasi": loc or "-",
+                "vendor_lokasi": vendor_lokasi,
+                "lokasi_edited": bool(lokasi_edited),
                 "jalur_lajur": jalur,
                 "item": boq_item,
                 "item_key": boq_item.item_key,
@@ -2190,11 +2371,13 @@ def process_opname_scan_message(
                 "vendor_keyword": vendor_keyword,
                 "item_edited": bool(item_edited),
                 "volume": round(vol_num, 4),
+                "hasil_baik": hasil_baik,
+                "removal_reason": removal_reason,
                 "handwritten_edited": bool(is_edited),
                 "row_action": row_action,
                 "anchored_from_excel": anchored_from_excel,
                 "material_status": "",
-                "keterangan": str(r_obj.get("keterangan") or "").strip(),
+                "keterangan": ket_raw,
             }
         )
 
@@ -2265,9 +2448,12 @@ def process_opname_scan_message(
                     "tanggal": rekap_dt,
                     "minggu": first_slot["minggu"],
                     "kode_temuan": "-",
+                    "tanggal_temuan": "-",
                     "wilayah": first_slot["wilayah"],
                     "vendor": first_slot["vendor"],
                     "lokasi": "-",
+                    "vendor_lokasi": "",
+                    "lokasi_edited": False,
                     "jalur_lajur": "-",
                     "item": rb_item,
                     "item_key": rb_item.item_key,
@@ -2287,6 +2473,8 @@ def process_opname_scan_message(
                     "vendor_keyword": "",
                     "item_edited": False,
                     "volume": round(rev_val, 4),
+                    "hasil_baik": None,
+                    "removal_reason": "",
                     "handwritten_edited": True,
                     "row_action": "ADDED",
                     "anchored_from_excel": False,
@@ -2321,6 +2509,35 @@ def process_opname_scan_message(
                     if rc_msg not in warn_seen:
                         warn_seen.add(rc_msg)
                         warnings.append(rc_msg)
+
+    conn_def = sqlite3.connect(settings.DB_URL)
+    try:
+        pending_defs = conn_def.execute(
+            """
+            SELECT source_slot_id, tanggal, lokasi, item_key, keyword, volume, satuan
+            FROM opname_deferred_disposal
+            WHERE status = 'PENDING' AND aset = ? AND wilayah = ? AND vendor = ?
+            ORDER BY defer_id ASC
+            """,
+            (aset, first_slot["wilayah"], first_slot["vendor"]),
+        ).fetchall()
+    finally:
+        conn_def.close()
+    if pending_defs:
+        active_pairs = {
+            (str(pe.get("item_key") or ""), str(pe.get("lokasi") or "-").strip().upper())
+            for pe in parsed_entries
+            if pe.get("row_action") != "REMOVED"
+        }
+        for d_src, _d_tgl, d_loc, d_ik, d_kw, d_vol, d_sat in pending_defs:
+            if (str(d_ik or ""), str(d_loc or "-").strip().upper()) not in active_pairs:
+                rem_d_msg = (
+                    f"Pengingat Disposal tertunda dari {d_src}: '{d_kw or d_ik}' di {d_loc or '-'} "
+                    f"({float(d_vol or 0):g} {d_sat or ''}) belum masuk opname ini."
+                ).strip()
+                if rem_d_msg not in warn_seen:
+                    warn_seen.add(rem_d_msg)
+                    warnings.append(rem_d_msg)
 
     scan_id = f"SCAN-{datetime.datetime.now():%y%m%d}-{uuid.uuid4().hex[:4].upper()}"
     print(f"[Opname Scan] Validated {len(parsed_entries)} row(s) into {len(slots_by_id)} slot(s) | staging {scan_id}...")
@@ -2367,7 +2584,7 @@ def process_opname_scan_message(
     )
     preview_msg = (
         f"🔎 *Hasil Scan Opname (`{scan_id}`)*\n"
-        f"Aset / Minggu: *{aset}* / *{first_slot['minggu']}* | Vendor: *{first_slot['vendor']}*\n"
+        f"Aset / Opname: *{aset}* / *{first_slot['minggu']}* | Vendor: *{first_slot['vendor']}*\n"
         + "\n".join(preview_lines[:20])
         + more_line
         + warn_block

@@ -1197,6 +1197,308 @@ class OpnameWorkflowTests(unittest.TestCase):
         self.assertEqual(staged_entries[1]["item_key"], "III.1")
         self.assertAlmostEqual(staged_entries[1]["volume"], 12.5)
 
+    def test_new_18col_form_with_opname_ke_and_tanggal_temuan(self):
+        self.assertEqual(
+            extract_scan_opname_hint("Scan Opname PV W1 OP2"),
+            {"aset": "PV", "wilayah": "W1", "minggu": "OP2"},
+        )
+        wb = openpyxl.Workbook()
+        ws = wb.active
+        ws.title = "AGT"
+        ws.cell(7, 2, "Wilayah:")
+        ws.cell(7, 4, "W1")
+        ws.cell(7, 5, "Vendor:")
+        ws.cell(7, 6, "MIJ")
+        ws.cell(7, 8, "Opname Ke-:")
+        ws.cell(7, 10, 1)
+        headers = [
+            "No.", "Tanggal Pekerjaan", "Tanggal Temuan", "STA / KM", "Jalur", "Lajur",
+            "KODE", "Item / Keyword RAB", "P", "L", "T", "Jml", "Vol. Vendor", "Vol. Opname",
+            "Satuan", "Baik", "Tdk Baik", "Keterangan",
+        ]
+        for i, h in enumerate(headers):
+            ws.cell(10, 2 + i, h)
+        ws.cell(11, 2, 1)
+        ws.cell(11, 3, datetime.date(2026, 8, 14))
+        ws.cell(11, 4, datetime.date(2026, 8, 2))
+        ws.cell(11, 5, "KM 45+200")
+        ws.cell(11, 6, "A")
+        ws.cell(11, 7, "L1")
+        ws.cell(11, 9, "Permanen")
+        ws.cell(11, 10, 4.0)
+        ws.cell(11, 11, 1.0)
+        ws.cell(11, 12, 0.05)
+        ws.cell(12, 2, "TOTAL PEMERIKSAAN")
+
+        ws_boq = wb.create_sheet("DAFTAR_BOQ")
+        for idx_b, it in enumerate(PV_ITEMS, start=2):
+            ws_boq.cell(idx_b, 1, it.keyword)
+            ws_boq.cell(idx_b, 2, it.item_key)
+            ws_boq.cell(idx_b, 3, it.uraian)
+            ws_boq.cell(idx_b, 4, it.satuan)
+        ws_boq.cell(1, 7, "PV")
+        ws_boq.cell(2, 7, "W1")
+        ws_boq.cell(3, 7, "MIJ")
+
+        buf = io.BytesIO()
+        wb.save(buf)
+        res = parse_standard_opname_xlsx(buf.getvalue(), filename="PV_W1_MIJ_2026.xlsx")
+        self.assertTrue(res.is_standard_form)
+        self.assertEqual(res.errors, [])
+        self.assertEqual(len(res.slots), 1)
+        sl = res.slots[0]
+        self.assertEqual(sl.slot_id, "XLS-2608-PV-W1-MIJ-OP1")
+        self.assertEqual(sl.minggu, "OP1")
+        self.assertEqual(sl.entries[0]["tanggal_temuan"], "2026-08-02")
+        self.assertEqual(sl.entries[0]["kode_temuan"], "2026-08-02")
+        self.assertAlmostEqual(sl.entries[0]["volume"], 0.2)
+
+    @patch("main.upload_file_to_onedrive", return_value=("OD_ITM_DISP", "https://1drv.ms/u/ARC_DISP"))
+    @patch("main.replace_opname_slot_rows", return_value=(0, 2))
+    @patch("main.ensure_monthly_opname_workbook", return_value=("DRV1", "ITM_AGT", "https://1drv.ms/x/AGT"))
+    @patch("main.extract_opname_form_ocr")
+    @patch("main.send_whatsapp_document")
+    @patch("main.send_whatsapp_message")
+    def test_scan_opname_lokasi_edited_baik_check_and_disposal_deferral_reminder(
+        self,
+        mock_send,
+        mock_send_doc,
+        mock_ocr,
+        mock_ensure,
+        mock_replace,
+        mock_upload_arc,
+    ):
+        wb_base = openpyxl.Workbook()
+        ws = wb_base.active
+        ws.title = "AGT"
+        ws.cell(7, 2, "Wilayah:")
+        ws.cell(7, 4, "W1")
+        ws.cell(7, 5, "Vendor:")
+        ws.cell(7, 6, "MIJ")
+        ws.cell(7, 8, "Opname Ke-:")
+        ws.cell(7, 10, "")
+        headers = [
+            "No.", "Tanggal Pekerjaan", "Tanggal Temuan", "STA / KM", "Jalur", "Lajur",
+            "KODE", "Item / Keyword RAB", "P", "L", "T", "Jml", "Vol. Vendor", "Vol. Opname",
+            "Satuan", "Baik", "Tdk Baik", "Keterangan",
+        ]
+        for i, h in enumerate(headers):
+            ws.cell(10, 2 + i, h)
+        ws.cell(11, 2, 1)
+        ws.cell(11, 3, datetime.date(2026, 8, 14))
+        ws.cell(11, 4, datetime.date(2026, 8, 1))
+        ws.cell(11, 5, "Gorda")
+        ws.cell(11, 6, "A")
+        ws.cell(11, 7, "L1")
+        ws.cell(11, 9, "Permanen")
+        ws.cell(11, 14, 1.0)
+        ws.cell(11, 15, 1.0)
+        ws.cell(12, 2, 2)
+        ws.cell(12, 3, datetime.date(2026, 8, 14))
+        ws.cell(12, 4, datetime.date(2026, 8, 2))
+        ws.cell(12, 5, "KM 48+100")
+        ws.cell(12, 6, "B")
+        ws.cell(12, 7, "L1")
+        ws.cell(12, 9, "Salob")
+        ws.cell(12, 14, 0.4)
+        ws.cell(12, 15, 0.4)
+        ws.cell(13, 2, "TOTAL PEMERIKSAAN")
+        ws_boq = wb_base.create_sheet("DAFTAR_BOQ")
+        for idx_b, it in enumerate(PV_ITEMS, start=2):
+            ws_boq.cell(idx_b, 1, it.keyword)
+            ws_boq.cell(idx_b, 2, it.item_key)
+            ws_boq.cell(idx_b, 3, it.uraian)
+            ws_boq.cell(idx_b, 4, it.satuan)
+        ws_boq.cell(1, 7, "PV")
+        ws_boq.cell(2, 7, "W1")
+        ws_boq.cell(3, 7, "MIJ")
+        b_buf = io.BytesIO()
+        wb_base.save(b_buf)
+
+        with patch("main._extract_image_bytes_from_message", return_value=b_buf.getvalue()):
+            main.process_message(
+                {
+                    "id": {"_serialized": "false_628111@c.us_BASE_FULL"},
+                    "from": "628111@c.us",
+                    "hasMedia": True,
+                    "body": "Opname",
+                    "media": {"filename": "PV_W1_MIJ_2026.xlsx", "mimetype": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"},
+                    "_session": "default",
+                }
+            )
+
+        mock_send.reset_mock()
+        mock_send_doc.reset_mock()
+        mock_replace.reset_mock()
+
+        mock_ocr.return_value = (
+            {
+                "aset": "PV",
+                "vendor": "MIJ",
+                "wilayah": "W1",
+                "opname_ke": "1",
+                "rows": [
+                    {
+                        "tanggal": "2026-08-14",
+                        "tanggal_temuan": "2026-08-01",
+                        "wilayah": "W1",
+                        "vendor": "MIJ",
+                        "lokasi": "Gorda",
+                        "raw_item": "Permanen",
+                        "vol_vendor": 1.0,
+                        "vol_opname": 1.0,
+                        "hasil_baik": True,
+                        "lokasi_edited": True,
+                        "handwritten_edited": True,
+                        "keterangan": "Lok: IC Cikupa",
+                    },
+                    {
+                        "tanggal": "2026-08-14",
+                        "tanggal_temuan": "2026-08-02",
+                        "wilayah": "W1",
+                        "vendor": "MIJ",
+                        "lokasi": "KM 48+100",
+                        "raw_item": "Salob",
+                        "vol_vendor": 0.4,
+                        "vol_opname": 0,
+                        "row_action": "REMOVED",
+                        "handwritten_edited": True,
+                        "keterangan": "disposal",
+                    },
+                    {
+                        "tanggal": "2026-08-15",
+                        "wilayah": "W1",
+                        "vendor": "MIJ",
+                        "lokasi": "KM 46+100",
+                        "raw_item": "Hotmix",
+                        "jml": 2.5,
+                        "vol_opname": 2.5,
+                        "hasil_baik": False,
+                        "row_action": "ADDED",
+                        "handwritten_edited": True,
+                    },
+                ],
+            },
+            "",
+        )
+        pdf_bytes = _make_sample_pdf_bytes()
+        with patch("main._extract_image_bytes_from_message", return_value=pdf_bytes):
+            main.process_message(
+                {
+                    "id": {"_serialized": "false_628111@c.us_SCAN_OP1"},
+                    "from": "628111@c.us",
+                    "hasMedia": True,
+                    "body": "Scan Opname PV",
+                    "media": {"filename": "opname_op1.pdf", "mimetype": "application/pdf"},
+                    "_session": "default",
+                }
+            )
+
+        preview_op1 = mock_send.call_args[0][1]
+        self.assertIn("OP1", preview_op1)
+        self.assertIn("lok: Gorda→IC Cikupa", preview_op1)
+        self.assertNotIn("cek revisi di web", preview_op1)
+        self.assertIn("TUNDA DISPOSAL", preview_op1)
+        self.assertIn("TDK BAIK", preview_op1)
+
+        scan_op1 = "SCAN-" + preview_op1.split("SCAN-")[1].split("`")[0]
+        mock_send.reset_mock()
+        main.process_message(
+            {"id": {"_serialized": "false_628111@c.us_SIMPAN_OP1"}, "from": "628111@c.us", "hasMedia": False, "body": f"/simpan {scan_op1}", "_session": "default"}
+        )
+        mock_replace.assert_called_once()
+        self.assertEqual(mock_replace.call_args[0][2], "XLS-2608-PV-W1-MIJ-OP1")
+        self.assertEqual([r[8] for r in mock_replace.call_args[0][3]], ["II.1", "II.6"])
+
+        conn = sqlite3.connect(self.db_path)
+        pend_defs = conn.execute(
+            "SELECT source_slot_id, item_key, lokasi, status FROM opname_deferred_disposal"
+        ).fetchall()
+        conn.close()
+        self.assertEqual(pend_defs, [("XLS-2608-PV-W1-MIJ-OP1", "II.2", "KM 48+100", "PENDING")])
+
+        # OP2 scan missing Salob KM 48+100 must warn PIC
+        mock_send.reset_mock()
+        mock_ocr.return_value = (
+            {
+                "aset": "PV",
+                "vendor": "MIJ",
+                "wilayah": "W1",
+                "opname_ke": "2",
+                "rows": [
+                    {
+                        "tanggal": "2026-08-20",
+                        "wilayah": "W1",
+                        "vendor": "MIJ",
+                        "lokasi": "KM 47+000",
+                        "raw_item": "Permanen",
+                        "vol_opname": 0.5,
+                    }
+                ],
+            },
+            "",
+        )
+        with patch("main._extract_image_bytes_from_message", return_value=pdf_bytes):
+            main.process_message(
+                {
+                    "id": {"_serialized": "false_628111@c.us_SCAN_OP2"},
+                    "from": "628111@c.us",
+                    "hasMedia": True,
+                    "body": "Scan Opname PV OP2",
+                    "media": {"filename": "opname_op2.pdf", "mimetype": "application/pdf"},
+                    "_session": "default",
+                }
+            )
+        preview_op2 = mock_send.call_args[0][1]
+        self.assertIn("Pengingat Disposal tertunda", preview_op2)
+        self.assertIn("KM 48+100", preview_op2)
+
+        # Committing OP2 including Salob KM 48+100 resolves the deferred disposal
+        wb_op2 = openpyxl.Workbook()
+        ws2 = wb_op2.active
+        ws2.title = "AGT"
+        ws2.cell(7, 2, "Wilayah:")
+        ws2.cell(7, 4, "W1")
+        ws2.cell(7, 5, "Vendor:")
+        ws2.cell(7, 6, "MIJ")
+        ws2.cell(7, 8, "Opname Ke-:")
+        ws2.cell(7, 10, 2)
+        for i, h in enumerate(headers):
+            ws2.cell(10, 2 + i, h)
+        ws2.cell(11, 2, 1)
+        ws2.cell(11, 3, datetime.date(2026, 8, 20))
+        ws2.cell(11, 5, "KM 48+100")
+        ws2.cell(11, 9, "Salob")
+        ws2.cell(11, 15, 0.4)
+        ws2.cell(12, 2, "TOTAL PEMERIKSAAN")
+        ws2_boq = wb_op2.create_sheet("DAFTAR_BOQ")
+        for idx_b, it in enumerate(PV_ITEMS, start=2):
+            ws2_boq.cell(idx_b, 1, it.keyword)
+            ws2_boq.cell(idx_b, 2, it.item_key)
+        ws2_boq.cell(1, 7, "PV")
+        ws2_boq.cell(2, 7, "W1")
+        ws2_boq.cell(3, 7, "MIJ")
+        op2_buf = io.BytesIO()
+        wb_op2.save(op2_buf)
+        with patch("main._extract_image_bytes_from_message", return_value=op2_buf.getvalue()):
+            main.process_message(
+                {
+                    "id": {"_serialized": "false_628111@c.us_XLSX_OP2"},
+                    "from": "628111@c.us",
+                    "hasMedia": True,
+                    "body": "Opname",
+                    "media": {"filename": "PV_W1_MIJ_2026.xlsx", "mimetype": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"},
+                    "_session": "default",
+                }
+            )
+
+        conn = sqlite3.connect(self.db_path)
+        resolved_status = conn.execute(
+            "SELECT status FROM opname_deferred_disposal WHERE source_slot_id = 'XLS-2608-PV-W1-MIJ-OP1'"
+        ).fetchone()[0]
+        conn.close()
+        self.assertEqual(resolved_status, "RESOLVED")
+
 
 if __name__ == "__main__":
     unittest.main()

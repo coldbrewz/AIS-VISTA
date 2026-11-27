@@ -661,3 +661,121 @@ class OpnameWebTests(unittest.TestCase):
             self.assertEqual(wb_oct["PML PV W1"]["K12"].value, 7)
             self.assertEqual(wb_oct["PML PV W1"]["Q12"].value, 4)
             wb_oct.close()
+
+    @patch("main.upload_file_to_onedrive", return_value=("OD_REV6_XLS", "https://1drv.ms/u/REV6_XLS"))
+    @patch("main.replace_opname_slot_rows", return_value=(0, 2))
+    @patch("main.ensure_monthly_opname_workbook", return_value=("DRV1", "ITM_AGT", "https://1drv.ms/x/AGT"))
+    def test_review_ui_renders_opname_ke_lokasi_diff_disposal_and_saves_deferral(
+        self,
+        mock_ensure,
+        mock_replace,
+        mock_upload_arc,
+    ):
+        scan_id = "SCAN-261127-REV6"
+        slots_payload = [
+            {
+                "slot_id": "XLS-2608-PV-W1-MIJ-OP1",
+                "cycle_key": "2026-08",
+                "cycle_month": 8,
+                "cycle_year": 2026,
+                "aset": "PV",
+                "wilayah": "W1",
+                "vendor": "MIJ",
+                "minggu": "OP1",
+                "table_name": "TBL_LOG_PV",
+                "entries": [
+                    {
+                        "tanggal": "2026-08-14",
+                        "kode_temuan": "2026-08-01",
+                        "tanggal_temuan": "2026-08-01",
+                        "wilayah": "W1",
+                        "vendor": "MIJ",
+                        "lokasi": "IC Cikupa",
+                        "vendor_lokasi": "Gorda",
+                        "lokasi_edited": True,
+                        "jalur_lajur": "A L1",
+                        "item_key": "II.1",
+                        "keyword": "Permanen",
+                        "satuan": "m3",
+                        "vol_vendor": 1.0,
+                        "volume": 1.0,
+                        "hasil_baik": True,
+                        "handwritten_edited": True,
+                        "row_action": "",
+                    },
+                    {
+                        "tanggal": "2026-08-14",
+                        "kode_temuan": "2026-08-02",
+                        "tanggal_temuan": "2026-08-02",
+                        "wilayah": "W1",
+                        "vendor": "MIJ",
+                        "lokasi": "KM 48+100",
+                        "jalur_lajur": "B L1",
+                        "item_key": "II.2",
+                        "keyword": "Salob",
+                        "satuan": "m3",
+                        "vol_vendor": 0.4,
+                        "volume": 0.0,
+                        "handwritten_edited": True,
+                        "row_action": "REMOVED",
+                        "removal_reason": "DISPOSAL",
+                        "keterangan": "disposal",
+                    },
+                    {
+                        "tanggal": "2026-08-15",
+                        "kode_temuan": "-",
+                        "wilayah": "W1",
+                        "vendor": "MIJ",
+                        "lokasi": "KM 46+100",
+                        "jalur_lajur": "B L1",
+                        "item_key": "II.6",
+                        "keyword": "Hotmix",
+                        "satuan": "Ton",
+                        "jml": 2.5,
+                        "volume": 2.5,
+                        "hasil_baik": False,
+                        "handwritten_edited": True,
+                        "row_action": "ADDED",
+                    },
+                ],
+            }
+        ]
+        conn = sqlite3.connect(self.db_path)
+        conn.execute(
+            "INSERT INTO opname_pending (pending_id, kind, aset, payload_json, xlsx_path, source_path, warnings_text, status, created_at) VALUES (?, 'SCAN_OCR', 'PV', ?, '{}', '{}', '', 'PENDING', ?)",
+            (scan_id, main.json.dumps(slots_payload), datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")),
+        )
+        conn.commit()
+        conn.close()
+
+        tok = make_opname_token(scan_id)
+        dash_tok = make_opname_token("DASHBOARD")
+        rev_html = self.client.get(f"/review/{scan_id}?token={tok}")
+        self.assertEqual(rev_html.status_code, 200)
+        for marker in ("Opname Ke-", "Tanggal Pekerjaan", "Tanggal Temuan", "TUNDA / DISPOSAL", "TDK BAIK", "BAIK", "vendor_lokasi", "Lokasi "):
+            self.assertIn(marker, rev_html.text)
+
+        opn_html = self.client.get(f"/opname?token={dash_tok}")
+        self.assertEqual(opn_html.status_code, 200)
+        self.assertIn("<th>Opname Ke-</th>", opn_html.text)
+
+        save_resp = self.client.post(
+            f"/api/opname/review/{scan_id}/save?token={tok}",
+            json={
+                "aset": "PV",
+                "wilayah": "W1",
+                "vendor": "MIJ",
+                "minggu": "OP1",
+                "entries": slots_payload[0]["entries"],
+            },
+        )
+        self.assertEqual(save_resp.status_code, 200)
+        self.assertEqual(mock_replace.call_args[0][2], "XLS-2608-PV-W1-MIJ-OP1")
+        self.assertEqual([r[8] for r in mock_replace.call_args[0][3]], ["II.1", "II.6"])
+
+        conn = sqlite3.connect(self.db_path)
+        defer_rows = conn.execute(
+            "SELECT source_slot_id, item_key, lokasi, status FROM opname_deferred_disposal"
+        ).fetchall()
+        conn.close()
+        self.assertEqual(defer_rows, [("XLS-2608-PV-W1-MIJ-OP1", "II.2", "KM 48+100", "PENDING")])

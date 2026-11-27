@@ -283,6 +283,7 @@ def _verify_handwritten_edits_on_page(
             "row_index": idx,
             "row_no": str(r.get("row_no") or "").strip(),
             "lokasi": str(r.get("lokasi") or "").strip(),
+            "lokasi_edited": bool(r.get("lokasi_edited")),
             "raw_item": str(r.get("raw_item") or "").strip(),
             "current": {
                 k: r.get(k)
@@ -292,7 +293,7 @@ def _verify_handwritten_edits_on_page(
         }
         for idx, r in enumerate(page_rows)
         if isinstance(r, dict)
-        and (r.get("handwritten_edited") or r.get("dimension_edited"))
+        and (r.get("handwritten_edited") or r.get("dimension_edited") or r.get("lokasi_edited"))
         and str(r.get("row_action") or "").strip().upper() not in ("REMOVED", "ADDED")
     ]
     if not flagged:
@@ -302,13 +303,14 @@ def _verify_handwritten_edits_on_page(
     img2_kb = max(1, (len(b64_hi) * 3) // (4 * 1024))
     verify_prompt = (
         "Inspect ONLY the highlighted rows below on this scanned toll road opname form.\n"
-        "A printed number in `P`, `L`, `T`, `Jml`, or `Vol. Vendor` was crossed out or scribbled over with pen ink, "
-        "and a NEW handwritten number was written next to it inside the same cell.\n\n"
+        "A printed number in `P`, `L`, `T`, `Jml`, or `Vol. Vendor` (or printed `STA / KM` location / note in `Keterangan`) "
+        "was crossed out with pen ink and a NEW handwritten replacement was written next to it or in `Keterangan`.\n\n"
         "Rules:\n"
-        "1. Read ONLY the handwritten pen ink carefully (digit by digit, decimal comma `,` becomes `.`, e.g. `5,4` -> `5.4`, `1,2` -> `1.2`, `2,9` -> `2.9`).\n"
-        "2. Separate the crossed-out printed value into `crossed_out_printed`, and put ONLY the uncrossed handwritten number into `handwritten_replacement`.\n"
-        "3. NEVER back-calculate `P`, `L`, `T`, or `Jml` from `Vol. Vendor` - the handwritten replacement intentionally changes the volume.\n"
-        "4. Return valid JSON ONLY:\n"
+        "1. Read ONLY handwritten pen ink carefully (decimal comma `,` becomes `.`, e.g. `5,4` -> `5.4`).\n"
+        "2. Put crossed-out printed text into `crossed_out_printed` and ONLY the new handwritten value into `handwritten_replacement`.\n"
+        "3. NEVER back-calculate `P`, `L`, `T`, or `Jml` from `Vol. Vendor`.\n"
+        '4. Allowed `field` values: `"p"`, `"l"`, `"t"`, `"jml"`, `"vol_opname"`, or `"lokasi"`.\n'
+        "5. Return valid JSON ONLY:\n"
         '{"corrections": [{"row_index": 0, "row_no": "", "field": "p", "crossed_out_printed": 6.1, "handwritten_replacement": 5.4}]}\n\n'
         f"FLAGGED ROWS TO VERIFY:\n{json.dumps(flagged, ensure_ascii=False)}"
     )
@@ -360,17 +362,24 @@ def _verify_handwritten_edits_on_page(
             if not isinstance(corr, dict):
                 continue
             field = str(corr.get("field") or "").strip().lower()
-            if field not in ("p", "l", "t", "jml", "vol_opname"):
+            if field not in ("p", "l", "t", "jml", "vol_opname", "lokasi"):
                 continue
             raw_val = corr.get("handwritten_replacement")
             if raw_val is None or isinstance(raw_val, bool):
                 continue
-            try:
-                new_num = float(str(raw_val).strip().replace(",", "."))
-            except (TypeError, ValueError):
-                continue
-            if new_num <= 0:
-                continue
+            new_loc = ""
+            new_num = 0.0
+            if field == "lokasi":
+                new_loc = str(raw_val).strip()
+                if not new_loc:
+                    continue
+            else:
+                try:
+                    new_num = float(str(raw_val).strip().replace(",", "."))
+                except (TypeError, ValueError):
+                    continue
+                if new_num <= 0:
+                    continue
 
             target_idx = None
             raw_ri = corr.get("row_index")
@@ -388,10 +397,15 @@ def _verify_handwritten_edits_on_page(
                 continue
 
             row = page_rows[target_idx]
-            row[field] = round(new_num, 4)
-            row["handwritten_edited"] = True
-            if field in ("p", "l", "t", "jml"):
-                row["dimension_edited"] = True
+            if field == "lokasi":
+                row["lokasi"] = new_loc
+                row["lokasi_edited"] = True
+                row["handwritten_edited"] = True
+            else:
+                row[field] = round(new_num, 4)
+                row["handwritten_edited"] = True
+                if field in ("p", "l", "t", "jml"):
+                    row["dimension_edited"] = True
             applied += 1
 
         print(
@@ -423,22 +437,22 @@ def extract_opname_form_ocr(
         f"You are an expert civil engineering opname OCR reader for Indonesian toll road forms.\n"
         f"Context hint from user: Aset='{aset_hint or 'auto'}', Caption='{caption or '-'}'.\n\n"
         f"Instructions:\n"
-        f"1. Read header fields if visible: aset (PV/GR/SG/WR/RM/LC/CA/DR/FE), wilayah (W1/W2) and vendor from top header box or rows, minggu (M1/M2/M3/M4/M5).\n"
-        f"2. Read every non-empty row from the main opname table (include the printed `No.` value in `row_no`). IGNORE completely empty blank rows and signature blocks.\n"
-        f"   If Tanggal, Minggu, Kode Temuan, or STA/Jalur/Lajur are left blank on subsequent rows at the same location ('ditto'), carry forward the values from the row above.\n"
-        f"3. CRITICAL: When a printed number in `P`, `L`, `T`, or `Jml` is scribbled/crossed out (often right-aligned) and a handwritten pen number is written next to it (often on the left), extract ONLY the uncrossed handwritten number into `p`, `l`, `t`, or `jml`, and set `dimension_edited: true` and `handwritten_edited: true`.\n"
-        f"   Convert Indonesian comma decimals to dots (e.g. `5,4` -> `5.4`, `1,2` -> `1.2`, `2,9` -> `2.9`). NEVER back-calculate `P`, `L`, `T`, or `Jml` from `Vol. Vendor`.\n"
-        f"4. CRITICAL: Leave `vol_opname` as `null` when the `Vol. Opname` column is blank on paper (do NOT copy `vol_vendor` and do NOT mentally multiply dimensions into `vol_opname`). If a handwritten number is explicitly written in `Vol. Opname` (or crossed out in `Vol. Vendor` and replaced), extract both `vol_vendor` and handwritten `vol_opname`, and set `handwritten_edited: true`.\n"
-        f"5. ROW ADDITIONS, REMOVALS & ITEM CHANGES (`row_action`, `item_edited`):\n"
+        f"1. Read top header: aset (PV/GR/SG/WR/RM/LC/CA/DR/FE), wilayah (W1/W2), vendor, and `Opname Ke-` (box beside Vendor, e.g. `1`, `2`, `OP1`, or `M1`..`M5`) into `opname_ke` (and `minggu` if `M1..M5`).\n"
+        f"2. Read every non-empty main table row (`row_no`), reading `Tanggal Pekerjaan` -> `tanggal` (`YYYY-MM-DD`) and `Tanggal Temuan` (or `Kode Temuan`) -> `tanggal_temuan` (`YYYY-MM-DD` or string). Ignore blank rows & signatures; carry forward ditto values from above.\n"
+        f"3. If printed `P`, `L`, `T`, or `Jml` is crossed out and a handwritten number is beside it, extract ONLY the handwritten number and set `dimension_edited: true`, `handwritten_edited: true`. Convert comma decimals to dots (`5,4` -> `5.4`). Never back-calculate from `Vol. Vendor`.\n"
+        f"4. Leave `vol_opname` as `null` when blank (do NOT copy `vol_vendor`). Extract handwritten `vol_opname` and set `handwritten_edited: true` when present.\n"
+        f"5. ROW STATUS, ITEM/LOKASI REVISIONS & HASIL PEKERJAAN:\n"
         f'   - Normal row: `"row_action": ""`.\n'
-        f'   - If an ENTIRE printed row is crossed out horizontally across the row OR marked `0`, `BATAL`, or `HAPUS` in `Vol. Opname` / `Keterangan`, STILL extract its printed `row_no`, `tanggal`, `lokasi`, `raw_item`, and `vol_vendor`, and set `"row_action": "REMOVED"`, `"handwritten_edited": true`, `"vol_opname": 0`.\n'
-        f'   - If a fully handwritten row is written inside `TAMBAHAN LAPANGAN` rows (`+1..+3`) or in the page margin, extract all handwritten fields and set `"row_action": "ADDED"`, `"handwritten_edited": true`.\n'
-        f'   - If printed `KODE` or `Item / Keyword RAB` is crossed out and a replacement item or short `KODE` (e.g. `Salob`, `II.2`, `I.15 PVC`) is written beside it or in `Keterangan` (`Ganti: ...` / `-> <KODE>`), extract ONLY the handwritten replacement into `raw_item`, and set `"item_edited": true` and `"handwritten_edited": true`.\n'
+        f'   - Entire row crossed out horizontally OR marked `0`, `BATAL`, `HAPUS`, or `DISPOSAL` in `Vol. Opname`/`Keterangan`: keep printed fields & exact `keterangan` (preserve `"disposal"`), set `"row_action": "REMOVED"`, `"handwritten_edited": true`, `"vol_opname": 0`.\n'
+        f'   - Handwritten row in `TAMBAHAN LAPANGAN` (`+1..+3`) or margin: set `"row_action": "ADDED"`, `"handwritten_edited": true`.\n'
+        f'   - Crossed-out `KODE` (left side) or `Item / Keyword RAB` with new item/code written beside it or `Ganti: ...` in `Keterangan`: extract replacement into `raw_item`, set `"item_edited": true`, `"handwritten_edited": true`.\n'
+        f'   - Crossed-out `STA / KM` / location (e.g. `Gorda`) with new location written in `Keterangan` (`STA: ...`, `Lok: ...`) or beside/above in the box: extract NEW location into `lokasi` (and updated `jalur`/`lajur`), set `"lokasi_edited": true`, `"handwritten_edited": true`.\n'
+        f'   - `Baik`/`YA` vs `Tdk Baik`/`TIDAK`: `"hasil_baik": true` if `Baik`/`YA` checked (`✓`,`v`,`1`); `false` if `Tdk Baik`/`TIDAK` checked; `null` if blank. CRITICAL: a checkmark in `Baik`/`YA` alone does NOT set `"handwritten_edited": true`.\n'
         f"6. Map `raw_item` strictly using the closest exact keyword or item_key from the BOQ menu below when available.\n"
-        f'7. IGNORE printed summary rows inside `REKAP VOLUME PER ITEM`, EXCEPT when handwritten numbers appear in `Vol. Revisi` OR a newly handwritten item + volume is written in empty `REKAP VOLUME PER ITEM` rows: put them into top-level `"rekap_revisi": [{{"raw_item": "", "vol_revisi": 0.0}}]`, otherwise `"rekap_revisi": []`. If a page ONLY contains printed summary rows or signatures with no handwritten `REKAP` entries, return `{{"rows": [], "rekap_revisi": []}}`.\n'
-        f"8. Return valid JSON ONLY (no markdown fences, no commentary):\n"
-        f'{{"aset": "", "vendor": "", "wilayah": "", "minggu": "", "rows": ['
-        f'{{"row_no": "", "tanggal": "YYYY-MM-DD", "kode_temuan": "", "wilayah": "", "vendor": "", "lokasi": "", "jalur": "", "lajur": "", "raw_item": "", "p": null, "l": null, "t": null, "jml": null, "vol_vendor": null, "vol_opname": null, "keterangan": "", "dimension_edited": false, "item_edited": false, "handwritten_edited": false, "row_action": ""}}'
+        f'7. Ignore printed `REKAP VOLUME PER ITEM` rows unless handwritten `Vol. Revisi` or handwritten new item+volume appears -> put in `"rekap_revisi": [{{"raw_item": "", "vol_revisi": 0.0}}]`. Signature-only pages return `{{"rows": [], "rekap_revisi": []}}`.\n'
+        f"8. Return valid JSON ONLY (no markdown fences):\n"
+        f'{{"aset": "", "vendor": "", "wilayah": "", "opname_ke": "", "minggu": "", "rows": ['
+        f'{{"row_no": "", "tanggal": "YYYY-MM-DD", "tanggal_temuan": "", "wilayah": "", "vendor": "", "lokasi": "", "jalur": "", "lajur": "", "raw_item": "", "p": null, "l": null, "t": null, "jml": null, "vol_vendor": null, "vol_opname": null, "hasil_baik": null, "keterangan": "", "dimension_edited": false, "item_edited": false, "lokasi_edited": false, "handwritten_edited": false, "row_action": ""}}'
         f'], "rekap_revisi": []}}\n\n'
         f"OFFICIAL BOQ MENU:\n{boq_menu_text}"
     )
@@ -450,7 +464,7 @@ def extract_opname_form_ocr(
 
     pages = page_images[:5]
     total_pages = len(pages)
-    merged: dict = {"aset": "", "vendor": "", "wilayah": "", "minggu": "", "rows": [], "rekap_revisi": []}
+    merged: dict = {"aset": "", "vendor": "", "wilayah": "", "opname_ke": "", "minggu": "", "rows": [], "rekap_revisi": []}
     last_err = ""
 
     for p_idx, img_bytes in enumerate(pages, start=1):
@@ -534,7 +548,7 @@ def extract_opname_form_ocr(
                     p_idx,
                     total_pages,
                 )
-                for key in ("aset", "vendor", "wilayah", "minggu"):
+                for key in ("aset", "vendor", "wilayah", "opname_ke", "minggu"):
                     if not merged[key] and parsed.get(key):
                         merged[key] = str(parsed.get(key)).strip()
                 merged["rows"].extend(page_rows)

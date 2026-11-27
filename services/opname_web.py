@@ -13,7 +13,7 @@ from fastapi import APIRouter, HTTPException, Query, Request, Response
 from fastapi.responses import HTMLResponse, JSONResponse
 
 from config import settings
-from services.message_utils import parse_opname_date_str, resolve_billing_cycle
+from services.message_utils import normalize_opname_batch, parse_opname_date_str, resolve_billing_cycle
 from services.microsoft import OPNAME_MONTH_NAMES
 from services.opname_catalog import (
     ASSET_TITLES,
@@ -120,7 +120,7 @@ def _to_opt_float(val: Any) -> tuple[bool, float | None]:
 
 
 def _cycle_from_slot_id(slot_id: str) -> tuple[str, int, int, str] | None:
-    m = re.match(r"^XLS-(\d{2})(\d{2})-([A-Z]+)-(W[12])-([A-Z0-9]+)-(M[1-5])$", (slot_id or "").upper())
+    m = re.match(r"^XLS-(\d{2})(\d{2})-([A-Z]+)-(W[12])-([A-Z0-9]+)-(OP\d{1,2}|M[1-5]|FULL)$", (slot_id or "").upper())
     if not m:
         return None
     yy = int(m.group(1))
@@ -161,7 +161,7 @@ def _load_record(db_path: str, record_id: str) -> dict[str, Any] | None:
                 "aset": norm_aset,
                 "wilayah": first_sl.get("wilayah") or (entries[0].get("wilayah") if entries else "W1") or "W1",
                 "vendor": first_sl.get("vendor") or (entries[0].get("vendor") if entries else "") or "",
-                "minggu": first_sl.get("minggu") or (entries[0].get("minggu") if entries else "M1") or "M1",
+                "minggu": first_sl.get("minggu") or (entries[0].get("minggu") if entries else "OP1") or "OP1",
                 "cycle_key": first_sl.get("cycle_key") or "",
                 "slots": slots,
                 "entries": entries,
@@ -199,7 +199,7 @@ def _load_record(db_path: str, record_id: str) -> dict[str, Any] | None:
                 "aset": norm_aset,
                 "wilayah": wilayah or sl.get("wilayah") or "W1",
                 "vendor": vendor or sl.get("vendor") or "",
-                "minggu": minggu or sl.get("minggu") or "M1",
+                "minggu": minggu or sl.get("minggu") or "OP1",
                 "cycle_key": cycle_key or sl.get("cycle_key") or "",
                 "slots": [sl] if sl else [],
                 "entries": entries,
@@ -237,8 +237,8 @@ def _load_record(db_path: str, record_id: str) -> dict[str, Any] | None:
             dt_fallback = parse_opname_date_str(ent_rows[0][2]) or datetime.date.today().strftime("%Y-%m-%d")
             cm, cy = resolve_billing_cycle(datetime.datetime.strptime(dt_fallback, "%Y-%m-%d").date())
             cycle_key, cycle_month, cycle_year = f"{cy:04d}-{cm:02d}", cm, cy
-            m_wk = re.search(r"\[(M[1-5])\]", first_pic.upper())
-            minggu = m_wk.group(1) if m_wk else "M1"
+            m_wk = re.search(r"\[(OP\d{1,2}|M[1-5]|FULL)\]", first_pic.upper())
+            minggu = m_wk.group(1) if m_wk else "OP1"
 
         rebuilt_entries = []
         for aset_v, wil_v, tgl_v, loc_v, vend_v, ik_v, vol_v, sat_v, _, _, _, kode_v in ent_rows:
@@ -248,6 +248,7 @@ def _load_record(db_path: str, record_id: str) -> dict[str, Any] | None:
                     "tanggal": tgl_v,
                     "minggu": minggu,
                     "kode_temuan": kode_v or "-",
+                    "tanggal_temuan": kode_v or "-",
                     "wilayah": wil_v,
                     "vendor": vend_v,
                     "lokasi": loc_v or "-",
@@ -317,7 +318,7 @@ def _load_record(db_path: str, record_id: str) -> dict[str, Any] | None:
             "warnings": [warn] if warn else [],
             "reply_chat_id": "",
             "session": "default",
-            "sender_label": re.sub(r"\s*\[M[1-5]\]\s*$", "", first_pic).strip(),
+            "sender_label": re.sub(r"\s*\[(?:OP\d{1,2}|M[1-5]|FULL)\]\s*$", "", first_pic).strip(),
             "updated_at": ent_rows[0][9] or "",
         }
     finally:
@@ -379,9 +380,9 @@ def _validate_and_build_slots(
         else:
             canon_vend = v_canon
 
-    hdr_minggu = str(payload.get("minggu") or "").strip().upper()
-    if not re.fullmatch(r"M[1-5]", hdr_minggu):
-        errors.append({"row": 0, "field": "minggu", "message": "Minggu wajib bernilai M1 sampai M5."})
+    hdr_minggu = normalize_opname_batch(payload.get("minggu"), default="")
+    if not re.fullmatch(r"(?:OP(?:[1-9]|1[0-2])|M[1-5]|FULL)", hdr_minggu):
+        errors.append({"row": 0, "field": "minggu", "message": "Opname Ke- wajib bernilai OP1-OP12, M1-M5, atau FULL."})
 
     raw_entries = payload.get("entries")
     if not isinstance(raw_entries, list) or len(raw_entries) == 0:
@@ -389,6 +390,7 @@ def _validate_and_build_slots(
         return [], [], [], errors
 
     parsed_entries: list[dict[str, Any]] = []
+    deferred_disposals: list[dict[str, Any]] = []
     warnings: list[str] = []
     warn_seen: set[str] = set()
 
@@ -398,6 +400,29 @@ def _validate_and_build_slots(
             continue
         row_action = str(raw_r.get("row_action") or "").strip().upper()
         if row_action == "REMOVED":
+            rem_rsn = str(raw_r.get("removal_reason") or "").strip().upper()
+            ket_rem = str(raw_r.get("keterangan") or "").strip()
+            if rem_rsn == "DISPOSAL" or "disposal" in ket_rem.lower():
+                d_ik = str(raw_r.get("item_key") or raw_r.get("keyword") or "").strip()
+                d_loc = str(raw_r.get("lokasi") or "-").strip() or "-"
+                d_boq = None
+                if aset and d_ik:
+                    d_boq, _ = resolve_boq_item(aset, d_ik, lokasi="" if d_loc == "-" else d_loc, wilayah=hdr_wil or "W1")
+                _, d_vv = _to_opt_float(raw_r.get("vol_vendor"))
+                _, d_vo = _to_opt_float(raw_r.get("volume"))
+                deferred_disposals.append(
+                    {
+                        "tanggal": parse_opname_date_str(str(raw_r.get("tanggal") or "")) or "",
+                        "lokasi": d_loc,
+                        "item_key": d_boq.item_key if d_boq else d_ik,
+                        "keyword": (d_boq.keyword if d_boq else str(raw_r.get("keyword") or d_ik)),
+                        "vol_vendor": d_vv if d_vv is not None else d_vo,
+                        "volume": d_vo if d_vo is not None else 0.0,
+                        "satuan": (d_boq.satuan if d_boq else str(raw_r.get("satuan") or "")),
+                        "removal_reason": "DISPOSAL",
+                        "keterangan": ket_rem or "disposal",
+                    }
+                )
             continue
 
         row_has_error = False
@@ -459,11 +484,17 @@ def _validate_and_build_slots(
         else:
             jalur_lajur = str(raw_r.get("jalur_lajur") or "-").strip() or "-"
 
+        raw_tem_v = str(raw_r.get("tanggal_temuan") or raw_r.get("kode_temuan") or "-").strip() or "-"
+        kode_tem_v = parse_opname_date_str(raw_tem_v) or raw_tem_v
+        raw_baik_v = raw_r.get("hasil_baik")
+        hasil_baik_v = raw_baik_v if isinstance(raw_baik_v, bool) else None
+
         parsed_entries.append(
             {
                 "tanggal": parsed_date,
                 "minggu": hdr_minggu,
-                "kode_temuan": str(raw_r.get("kode_temuan") or "-").strip() or "-",
+                "kode_temuan": kode_tem_v,
+                "tanggal_temuan": kode_tem_v,
                 "wilayah": row_wil,
                 "vendor": canon_vend,
                 "lokasi": loc or "-",
@@ -478,6 +509,7 @@ def _validate_and_build_slots(
                 "jml": dim_vals["jml"],
                 "vol_vendor": dim_vals["vol_vendor"],
                 "volume": round(vol_num, 4),
+                "hasil_baik": hasil_baik_v,
                 "material_status": str(raw_r.get("material_status") or "").strip(),
                 "keterangan": str(raw_r.get("keterangan") or "").strip(),
             }
@@ -512,6 +544,10 @@ def _validate_and_build_slots(
                 "entries": [],
             }
         slots_by_id[sid]["entries"].append(ent)
+
+    if deferred_disposals and slots_by_id:
+        first_sl_obj = next(iter(slots_by_id.values()))
+        first_sl_obj["deferred_disposals"] = deferred_disposals
 
     return list(slots_by_id.values()), parsed_entries, warnings, []
 

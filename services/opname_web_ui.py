@@ -967,8 +967,15 @@ main.review-main {{
                                 <select id="vendorSelect" class="select"></select>
                             </div>
                             <div>
-                                <label class="field-label" for="mingguSelect">Minggu</label>
+                                <label class="field-label" for="mingguSelect">Opname Ke-</label>
                                 <select id="mingguSelect" class="select">
+                                    <option value="OP1">OP1 (Opname 1)</option>
+                                    <option value="OP2">OP2 (Opname 2)</option>
+                                    <option value="OP3">OP3 (Opname 3)</option>
+                                    <option value="OP4">OP4 (Opname 4)</option>
+                                    <option value="OP5">OP5 (Opname 5)</option>
+                                    <option value="OP6">OP6 (Opname 6)</option>
+                                    <option value="FULL">FULL</option>
                                     <option value="M1">M1</option>
                                     <option value="M2">M2</option>
                                     <option value="M3">M3</option>
@@ -1534,17 +1541,29 @@ main.review-main {{
 
                 let statusBadges = "";
                 if (isRemoved) {{
-                    statusBadges += '<span class="tag tag-removed">DIHAPUS / BATAL</span>';
+                    if (row.removal_reason === "DISPOSAL" || /disposal/i.test(row.keterangan || "")) {{
+                        statusBadges += '<span class="tag tag-warn">TUNDA / DISPOSAL</span>';
+                    }} else {{
+                        statusBadges += '<span class="tag tag-removed">DIHAPUS / BATAL</span>';
+                    }}
                 }} else if (isAdded) {{
                     statusBadges += '<span class="tag tag-added">+ TAMBAHAN</span>';
                 }} else if (row.handwritten_edited) {{
                     statusBadges += '<span class="tag tag-warn">Revisi Tangan OCR</span>';
+                }}
+                if (!isRemoved && row.hasil_baik === true) {{
+                    statusBadges += '<span class="tag tag-added">BAIK</span>';
+                }} else if (!isRemoved && row.hasil_baik === false) {{
+                    statusBadges += '<span class="tag tag-removed">TDK BAIK</span>';
                 }}
 
                 const diffParts = [];
                 if (!isRemoved && !isAdded) {{
                     if (row.vendor_keyword && row.vendor_item_key && row.vendor_item_key !== row.item_key) {{
                         diffParts.push("Item " + row.vendor_keyword + " -> " + (row.keyword || row.item_key));
+                    }}
+                    if (row.vendor_lokasi && row.lokasi && row.vendor_lokasi !== row.lokasi) {{
+                        diffParts.push("Lokasi " + row.vendor_lokasi + " -> " + row.lokasi);
                     }}
                     [["P", "p", "vendor_p"], ["L", "l", "vendor_l"], ["T", "t", "vendor_t"], ["Jml", "jml", "vendor_jml"]].forEach(function(pair) {{
                         const lbl = pair[0], k = pair[1], vk = pair[2];
@@ -1588,12 +1607,12 @@ main.review-main {{
                     diffHtml +
                     '<div class="row-fields">' +
                         '<div class="f-tanggal">' +
-                            '<label class="field-label" for="tgl_' + idx + '">Tanggal</label>' +
+                            '<label class="field-label" for="tgl_' + idx + '">Tanggal Pekerjaan</label>' +
                             '<input id="tgl_' + idx + '" class="input input-mono" type="date" value="' + esc(row.tanggal || "") + '" data-field="tanggal" />' +
                         '</div>' +
                         '<div class="f-kode">' +
-                            '<label class="field-label" for="kode_' + idx + '">Kode Temuan</label>' +
-                            '<input id="kode_' + idx + '" class="input input-mono" type="text" placeholder="Contoh: 181126PV001" value="' + esc(row.kode_temuan === "-" ? "" : (row.kode_temuan || "")) + '" data-field="kode_temuan" />' +
+                            '<label class="field-label" for="kode_' + idx + '">Tanggal Temuan</label>' +
+                            '<input id="kode_' + idx + '" class="input input-mono" type="text" placeholder="YYYY-MM-DD (opsional)" value="' + esc((row.tanggal_temuan || row.kode_temuan) === "-" ? "" : (row.tanggal_temuan || row.kode_temuan || "")) + '" data-field="kode_temuan" />' +
                         '</div>' +
                         '<div class="f-lokasi">' +
                             '<label class="field-label" for="loc_' + idx + '">STA / KM</label>' +
@@ -1781,7 +1800,14 @@ main.review-main {{
 
             asetDisplay.value = data.aset + " - " + data.aset_title;
             wilayahSelect.value = data.wilayah || "W1";
-            mingguSelect.value = data.minggu || "M1";
+            const targetBatch = data.minggu || "OP1";
+            if (!Array.from(mingguSelect.options).some(function(o) {{ return o.value === targetBatch; }})) {{
+                const extraOpt = document.createElement("option");
+                extraOpt.value = targetBatch;
+                extraOpt.textContent = targetBatch;
+                mingguSelect.appendChild(extraOpt);
+            }}
+            mingguSelect.value = targetBatch;
 
             const vendors = Array.from(new Set([].concat(data.vendor_options || [], [data.vendor || ""]).filter(Boolean)));
             vendorSelect.innerHTML = vendors.map(function(v) {{
@@ -1871,6 +1897,7 @@ main.review-main {{
                     return {{
                         tanggal: r.tanggal || "",
                         kode_temuan: r.kode_temuan || "-",
+                        tanggal_temuan: r.kode_temuan || r.tanggal_temuan || "-",
                         lokasi: r.lokasi || "",
                         jalur: r.jalur || "",
                         lajur: r.lajur || "",
@@ -1881,7 +1908,9 @@ main.review-main {{
                         jml: r.jml === "" || r.jml == null ? null : Number(String(r.jml).replace(",", ".")),
                         vol_vendor: r.vol_vendor == null ? null : Number(r.vol_vendor),
                         volume: r.volume === "" || r.volume == null ? 0 : Number(String(r.volume).replace(",", ".")),
+                        hasil_baik: typeof r.hasil_baik === "boolean" ? r.hasil_baik : null,
                         row_action: r.row_action || "",
+                        removal_reason: r.removal_reason || "",
                         material_status: r.material_status || "",
                         keterangan: r.keterangan || "",
                     }};
@@ -2360,7 +2389,7 @@ main.list-main {{
                                 <th>Aset</th>
                                 <th>Wilayah</th>
                                 <th>Vendor</th>
-                                <th>Minggu</th>
+                                <th>Opname Ke-</th>
                                 <th>Baris</th>
                                 <th>Diperbarui</th>
                                 <th>Aksi</th>
@@ -4118,7 +4147,7 @@ main.guide-main {{
         <section class="panel guide-section">
             <h2>1. Alur Opname &amp; Tagihan di WhatsApp</h2>
             <ul>
-                <li><strong>Scan Form Opname:</strong> kirim foto atau PDF form bertanda tangan dengan caption <code>Scan Opname PV M1</code> (ganti kode aset/minggu). Bot membalas link review HP/PC, ringkasan OCR, dan file Excel siap edit.</li>
+                <li><strong>Scan Form Opname:</strong> kirim foto atau PDF form bertanda tangan dengan caption <code>Scan Opname PV OP1</code> (ganti kode aset/opname ke-). Bot membalas link review HP/PC, ringkasan OCR, dan file Excel siap edit.</li>
                 <li><strong>Review &amp; Edit via Web:</strong> buka link review dari WhatsApp atau masuk ke <a href="{safe_editor}">Editor Opname</a> untuk mengoreksi baris pekerjaan lalu klik <code>Simpan ke DATA UNTUK VOL</code>.</li>
                 <li><strong>Kirim File Excel Opname:</strong> sertakan kata <code>Opname</code> pada caption saat mengirim file <code>.xlsx</code> agar diproses bot (Excel tanpa kata <code>Opname</code> dilewati).</li>
                 <li><strong>Perintah Opname &amp; Tagihan:</strong> <code>/simpan SCAN-...</code>, <code>/status opname [YYYY-MM]</code>, <code>/arsip &lt;SLOT_ID&gt;</code>, <code>/undo &lt;SLOT_ID&gt;</code>, <code>/tagihan base YYYY-MM</code>, dan <code>/tagihan [YYYY-MM]</code>.</li>

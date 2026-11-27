@@ -200,27 +200,52 @@ def extract_media_metadata(message: dict) -> tuple[str, str]:
     return filename, mimetype.lower()
 
 
+def normalize_opname_batch(raw, default: str = "OP1") -> str:
+    """Normalize opname sequence or legacy week label (`1`->`OP1`, `OP2`, `M1`..`M5`, `FULL`)."""
+    s = re.sub(r"\s+", " ", str(raw or "").strip().upper())
+    if not s:
+        return default
+    if s == "FULL":
+        return "FULL"
+    if re.fullmatch(r"M[1-5]", s):
+        return s
+    m_op = re.match(r"^(?:OP(?:NAME)?[\s\-_]*(?:KE[\s\-_]*)?|KE[\s\-_]*)?(\d{1,2})$", s)
+    if m_op:
+        num = int(m_op.group(1))
+        if 1 <= num <= 12:
+            return f"OP{num}"
+    m_op_anywhere = re.search(r"\bOP(?:NAME)?[\s\-_]*(?:KE[\s\-_]*)?([1-9]|1[0-2])\b", s)
+    if m_op_anywhere:
+        return f"OP{int(m_op_anywhere.group(1))}"
+    m_wk = re.search(r"\b(M[1-5])\b", s)
+    if m_wk:
+        return m_wk.group(1)
+    return default
+
+
 def extract_scan_opname_hint(text: str) -> dict | None:
     """
-    Detect `Scan Opname` / `Opname Scan` trigger and extract optional asset, wilayah, vendor, and minggu hints.
+    Detect `Scan Opname` / `Opname Scan` trigger and extract optional asset, wilayah, and opname batch hints.
     """
     if not isinstance(text, str) or not SCAN_OPNAME_PATTERN.search(text):
         return None
     up = text.upper()
     aset = ""
     for tok in re.findall(r"\b([A-Z]{2,10})\b", up):
-        if tok in ("SCAN", "OPNAME", "W1", "W2", "WIL", "PT", "CV"):
+        if tok in ("SCAN", "OPNAME", "W1", "W2", "WIL", "PT", "CV", "OP", "KE"):
             continue
         norm = normalize_asset_code(tok)
         if norm:
             aset = norm
             break
     m_wil = re.search(r"\b(W[12])\b", up)
+    m_op = re.search(r"\b(?:OP(?:NAME)?[\s\-_]*(?:KE[\s\-_]*)?|KE[\s\-_]*)([1-9]|1[0-2])\b", up)
     m_wk = re.search(r"\b(M[1-5])\b", up)
+    batch = f"OP{int(m_op.group(1))}" if m_op else (m_wk.group(1) if m_wk else "")
     return {
         "aset": aset,
         "wilayah": m_wil.group(1) if m_wil else "",
-        "minggu": m_wk.group(1) if m_wk else "",
+        "minggu": batch,
     }
 
 
