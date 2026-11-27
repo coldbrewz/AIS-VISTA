@@ -977,6 +977,10 @@ def _commit_opname_slots(
                 "entries": entries,
             }
         )
+        print(
+            f"[Opname Commit] {slot_id} ({source_type}) -> {table_name} | "
+            f"replaced={deleted_cnt} appended={appended_cnt}"
+        )
     return results
 
 
@@ -1053,6 +1057,7 @@ def handle_simpan_command(reply_chat_id: str, sender_label: str, body_text: str,
         send_whatsapp_message(reply_chat_id, "❌ Format salah. Ketik `/simpan SCAN-...` atau `/simpan CONF-...`.", session)
         return
     pending_id = parts[1].strip().upper()
+    print(f"[Opname /simpan] Confirming {pending_id} by {sender_label}")
     conn = sqlite3.connect(settings.DB_URL)
     row = conn.execute(
         "SELECT kind, aset, payload_json, xlsx_path, source_path, status FROM opname_pending WHERE UPPER(pending_id) = ?",
@@ -1060,10 +1065,12 @@ def handle_simpan_command(reply_chat_id: str, sender_label: str, body_text: str,
     ).fetchone()
     conn.close()
     if not row:
+        print(f"[Opname /simpan] Not found: {pending_id}")
         send_whatsapp_message(reply_chat_id, f"⚠️ ID staging `{pending_id}` tidak ditemukan.", session)
         return
     kind, _aset, payload_json, xlsx_path, source_path, status = row
     if status != "PENDING":
+        print(f"[Opname /simpan] Skipped {pending_id}: already {status}")
         send_whatsapp_message(reply_chat_id, f"⚠️ Data `{pending_id}` sudah diproses sebelumnya (`{status}`).", session)
         return
 
@@ -1084,6 +1091,7 @@ def handle_simpan_command(reply_chat_id: str, sender_label: str, body_text: str,
             session=session,
         )
     except Exception as e:
+        print(f"[Opname /simpan] Failed {pending_id}: {e}")
         send_whatsapp_message(reply_chat_id, f"❌ Gagal menyimpan `{pending_id}` ke OneDrive: {e}", session)
         return
 
@@ -1091,6 +1099,7 @@ def handle_simpan_command(reply_chat_id: str, sender_label: str, body_text: str,
     conn.execute("UPDATE opname_pending SET status = 'CONFIRMED' WHERE UPPER(pending_id) = ?", (pending_id,))
     conn.commit()
     conn.close()
+    print(f"[Opname /simpan] Confirmed {pending_id} -> {', '.join(r['slot_id'] for r in results)}")
     send_whatsapp_message(reply_chat_id, _format_commit_reply(results, f"Konfirmasi {pending_id}"), session)
 
 
@@ -1237,6 +1246,7 @@ def handle_undo_command(reply_chat_id: str, body_text: str, session: str):
         )
         conn.commit()
         conn.close()
+        print(f"[Opname /undo] Voided {opname_id} in {table_name} (deleted={deleted})")
         send_whatsapp_message(
             reply_chat_id,
             f"🗑️ *Opname Dibatalkan*\nID: `{opname_id}`\nBaris dihapus di `{table_name}`: {deleted}",
@@ -1244,6 +1254,7 @@ def handle_undo_command(reply_chat_id: str, body_text: str, session: str):
         )
     except Exception as e:
         conn.close()
+        print(f"[Opname /undo] Failed {opname_id}: {e}")
         send_whatsapp_message(reply_chat_id, f"❌ Gagal /undo `{opname_id}`: {e}", session)
 
 
@@ -1554,16 +1565,21 @@ def process_opname_xlsx_message(
     if not settings.OPNAME_ENABLED:
         return False
 
+    print(f"[Opname XLSX] Start | file={filename or '-'} | bytes={len(file_bytes)} | sender={sender_label}")
     res = parse_standard_opname_xlsx(file_bytes, filename=filename, caption=caption)
     if not res.is_standard_form:
+        print(f"[Opname XLSX] Ignored (not standard opname workbook): {filename or '-'}")
         return False
 
     if res.errors:
+        print(f"[Opname XLSX] Rejected ({len(res.errors)} error(s)): {'; '.join(res.errors[:5])}")
         err_txt = "\n".join(f"- {e}" for e in res.errors[:12])
         send_whatsapp_message(reply_chat_id, f"⚠️ *File Excel Opname Ditolak*\n{err_txt}", session)
         return True
 
     first_sl = res.slots[0]
+    total_rows = sum(len(s.entries) for s in res.slots)
+    print(f"[Opname XLSX] Parsed {len(res.slots)} slot(s), {total_rows} row(s) -> archiving to OneDrive...")
     arch_name = filename or f"{first_sl.slot_id}.xlsx"
     xlsx_mime = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
     try:
@@ -1572,6 +1588,7 @@ def process_opname_xlsx_message(
         )
     except Exception as arch_err:
         unmark_processed(processing_key)
+        print(f"[Opname XLSX] Archive failed: {arch_err}")
         send_whatsapp_message(reply_chat_id, f"❌ Gagal arsip file Excel ke OneDrive: {arch_err}", session)
         return True
     slots_data = json.loads(_serialize_slots(res.slots))
@@ -1590,6 +1607,7 @@ def process_opname_xlsx_message(
             session=session,
             sender_label=sender_label,
         )
+        print(f"[Opname XLSX] Staged pending confirmation {conf_id} ({len(res.roster_warnings)} warning(s))")
         warn_txt = "\n".join(f"• {w}" for w in res.roster_warnings)
         slot_txt = ", ".join(s["slot_id"] for s in slots_data)
         review_link = build_review_url(settings.PUBLIC_BASE_URL, conf_id)
@@ -1615,9 +1633,11 @@ def process_opname_xlsx_message(
         )
     except Exception as e:
         unmark_processed(processing_key)
+        print(f"[Opname XLSX] Commit failed: {e}")
         send_whatsapp_message(reply_chat_id, f"❌ Gagal menulis data Excel ke OneDrive: {e}", session)
         return True
 
+    print(f"[Opname XLSX] Done | committed {len(results)} slot(s): {', '.join(r['slot_id'] for r in results)}")
     send_whatsapp_message(reply_chat_id, _format_commit_reply(results, "Excel Form"), session)
     return True
 
@@ -1634,7 +1654,9 @@ def process_opname_scan_message(
     if not settings.OPNAME_ENABLED:
         return
 
+    print(f"[Opname Scan] Start | caption={caption!r} | hint={scan_hint} | sender={sender_label}")
     if not message.get("hasMedia"):
+        print("[Opname Scan] Rejected: no media attached")
         send_whatsapp_message(
             reply_chat_id,
             "⚠️ *Scan Opname Ditolak*\nLampirkan foto atau PDF form opname bersama caption `Scan Opname`.",
@@ -1647,9 +1669,11 @@ def process_opname_scan_message(
         raw_bytes = _extract_image_bytes_from_message(message)
     except Exception as dl_err:
         unmark_processed(processing_key)
+        print(f"[Opname Scan] Download failed: {dl_err}")
         send_whatsapp_message(reply_chat_id, f"❌ Gagal mengunduh lampiran Scan Opname: {dl_err}", session)
         return
 
+    print(f"[Opname Scan] Downloaded | file={filename or '-'} | mime={mimetype or '-'} | bytes={len(raw_bytes)}")
     is_pdf = (
         mimetype == "application/pdf"
         or filename.lower().endswith(".pdf")
@@ -1658,8 +1682,10 @@ def process_opname_scan_message(
     if is_pdf:
         try:
             page_images = _render_pdf_pages_to_jpeg(raw_bytes)
+            print(f"[Opname Scan] Rendered PDF -> {len(page_images)} page(s)")
         except Exception as pdf_err:
             unmark_processed(processing_key)
+            print(f"[Opname Scan] PDF render failed: {pdf_err}")
             send_whatsapp_message(reply_chat_id, f"❌ Gagal membaca PDF Scan Opname: {pdf_err}", session)
             return
     else:
@@ -1667,14 +1693,17 @@ def process_opname_scan_message(
 
     hint_aset = scan_hint.get("aset") or ""
     boq_menu = format_boq_cheat_sheet(hint_aset, max_items=40) if hint_aset else ""
+    print(f"[Opname Scan] Running OCR on {len(page_images)} page(s) (hint aset={hint_aset or 'auto'})...")
     ocr_res, ocr_err = extract_opname_form_ocr(page_images, hint_aset, caption, boq_menu)
     if ocr_err and not ocr_res.get("rows"):
         unmark_processed(processing_key)
+        print(f"[Opname Scan] OCR failed: {ocr_err}")
         send_whatsapp_message(reply_chat_id, f"❌ OCR Scan Opname gagal: {ocr_err}", session)
         return
 
     aset = normalize_asset_code(hint_aset or str(ocr_res.get("aset", "")))
     if not aset:
+        print("[Opname Scan] Rejected: asset code not detected")
         send_whatsapp_message(
             reply_chat_id,
             "⚠️ Jenis pekerjaan tidak terbaca dari scan. Sertakan kode di caption, contoh: `Scan Opname PV`.",
@@ -1684,6 +1713,7 @@ def process_opname_scan_message(
 
     raw_rows = ocr_res.get("rows") or []
     if not raw_rows:
+        print("[Opname Scan] Rejected: 0 table rows extracted from scan")
         send_whatsapp_message(reply_chat_id, "⚠️ Tidak ada baris pekerjaan terbaca pada lampiran scan.", session)
         return
 
@@ -1812,6 +1842,7 @@ def process_opname_scan_message(
         )
 
     if errors or not parsed_entries:
+        print(f"[Opname Scan] Validation failed ({len(errors)} error(s)): {'; '.join(errors[:5])}")
         err_msg = "\n".join(f"- {e}" for e in errors[:10]) if errors else "Baris opname tidak valid."
         send_whatsapp_message(reply_chat_id, f"⚠️ *Scan Opname Perlu Perbaikan*\n{err_msg}", session)
         return
@@ -1841,6 +1872,7 @@ def process_opname_scan_message(
 
     first_slot = next(iter(slots_by_id.values()))
     scan_id = f"SCAN-{datetime.datetime.now():%y%m%d}-{uuid.uuid4().hex[:4].upper()}"
+    print(f"[Opname Scan] Validated {len(parsed_entries)} row(s) into {len(slots_by_id)} slot(s) | staging {scan_id}...")
     src_ext = ".pdf" if is_pdf else ".jpg"
     src_mime = "application/pdf" if is_pdf else "image/jpeg"
     xlsx_mime = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
@@ -1855,6 +1887,7 @@ def process_opname_scan_message(
         )
     except Exception as arch_err:
         unmark_processed(processing_key)
+        print(f"[Opname Scan] Archive failed for {scan_id}: {arch_err}")
         send_whatsapp_message(reply_chat_id, f"❌ Gagal arsip scan opname ke OneDrive: {arch_err}", session)
         return
 
@@ -1870,6 +1903,7 @@ def process_opname_scan_message(
         session=session,
         sender_label=sender_label,
     )
+    print(f"[Opname Scan] Staged {scan_id} | aset={aset} | rows={len(parsed_entries)} | warnings={len(warnings)}")
 
     warn_block = ("\n\n⚠️ *Catatan Roster:*\n" + "\n".join(f"• {w}" for w in warnings)) if warnings else ""
     review_link = build_review_url(settings.PUBLIC_BASE_URL, scan_id)
@@ -2126,6 +2160,7 @@ def process_message(message: dict):
             xlsx_bytes = _extract_image_bytes_from_message(message)
         except Exception as dl_err:
             unmark_processed(processing_key)
+            print(f"[Opname XLSX] Download failed ({media_filename or '-'}): {dl_err}")
             send_whatsapp_message(reply_chat_id, f"❌ Gagal mengunduh file Excel opname: {dl_err}", session)
             return
         handled = process_opname_xlsx_message(

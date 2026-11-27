@@ -874,8 +874,10 @@ def create_opname_web_router(deps: dict[str, Any]) -> APIRouter:
         if not body.get("aset"):
             body["aset"] = record["aset"]
 
+        print(f"[Opname Web] Saving {rid} ({record['record_type']}) | rows={len(body.get('entries') or [])}")
         slots_data, flat_entries, warnings, errors = _validate_and_build_slots(body)
         if errors:
+            print(f"[Opname Web] Validation failed for {rid}: {len(errors)} error(s)")
             return JSONResponse(
                 status_code=422,
                 content={
@@ -903,6 +905,7 @@ def create_opname_web_router(deps: dict[str, Any]) -> APIRouter:
                 _XLSX_MIME,
             )
         except Exception as arch_err:
+            print(f"[Opname Web] Archive failed for {rid}: {arch_err}")
             raise HTTPException(status_code=502, detail=f"Gagal mengunggah file Excel ke OneDrive: {arch_err}")
 
         archive_items: list[tuple[str, dict[str, Any]]] = []
@@ -934,6 +937,7 @@ def create_opname_web_router(deps: dict[str, Any]) -> APIRouter:
                             deps["delete_slot_rows"],
                         )
         except Exception as del_err:
+            print(f"[Opname Web] Cleanup old slot failed for {rid}: {del_err}")
             raise HTTPException(
                 status_code=502,
                 detail=f"Gagal membersihkan baris slot lama di OneDrive: {del_err}",
@@ -953,10 +957,13 @@ def create_opname_web_router(deps: dict[str, Any]) -> APIRouter:
                 session=session_name,
             )
         except Exception as commit_err:
+            print(f"[Opname Web] Commit failed for {rid}: {commit_err}")
             raise HTTPException(
                 status_code=502,
                 detail=f"Gagal menyimpan baris ke DATA_UNTUK_VOL di OneDrive: {commit_err}",
             )
+
+        print(f"[Opname Web] Saved {rid} -> {', '.join(r['slot_id'] for r in results)}")
 
         if record["record_type"] == "PENDING":
             conn = sqlite3.connect(db_path)
