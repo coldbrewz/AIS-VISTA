@@ -676,6 +676,42 @@ class OpnameWorkflowTests(unittest.TestCase):
                         "dimension_edited": False,
                         "handwritten_edited": False,
                     },
+                    {
+                        "tanggal": "2026-11-11",
+                        "kode_temuan": "111126PV005",
+                        "wilayah": "W1",
+                        "vendor": "MIJ",
+                        "lokasi": "KM 31+120",
+                        "jalur": "B",
+                        "lajur": "L1",
+                        "raw_item": "Hotmix",
+                        "p": None,
+                        "l": None,
+                        "t": None,
+                        "jml": 5.0,
+                        "vol_vendor": 5.16,
+                        "vol_opname": None,
+                        "dimension_edited": True,
+                        "handwritten_edited": True,
+                    },
+                    {
+                        "tanggal": "2026-11-11",
+                        "kode_temuan": "111126PV006",
+                        "wilayah": "W1",
+                        "vendor": "MIJ",
+                        "lokasi": "Gorda Ramp Akses (Cikande)",
+                        "jalur": "",
+                        "lajur": "",
+                        "raw_item": "Permanen",
+                        "p": 6.1,
+                        "l": 2.4,
+                        "t": 0.07,
+                        "jml": None,
+                        "vol_vendor": 1.025,
+                        "vol_opname": None,
+                        "dimension_edited": True,
+                        "handwritten_edited": True,
+                    },
                 ],
             },
             "",
@@ -699,17 +735,30 @@ class OpnameWorkflowTests(unittest.TestCase):
         self.assertIn("1.4 m3", preview)
         self.assertIn("2.5 m3", preview)
         self.assertIn("2.3 Ton", preview)
+        self.assertIn("5 Ton", preview)
+        self.assertIn("(auto)", preview)
+        self.assertIn("cek revisi di web", preview)
 
         returned_xlsx = mock_send_doc.call_args[0][1]
         parsed_back = parse_standard_opname_xlsx(returned_xlsx, filename=mock_send_doc.call_args[0][2])
         self.assertTrue(parsed_back.is_standard_form)
         self.assertEqual(parsed_back.errors, [])
         entries = parsed_back.slots[0].entries
-        self.assertEqual(len(entries), 4)
+        self.assertEqual(len(entries), 6)
         self.assertAlmostEqual(entries[0]["volume"], 1.5)
         self.assertAlmostEqual(entries[1]["volume"], 1.4)
         self.assertAlmostEqual(entries[2]["volume"], 2.5)
         self.assertAlmostEqual(entries[3]["volume"], 2.3)
+        self.assertAlmostEqual(entries[4]["volume"], 5.0)
+        self.assertAlmostEqual(entries[5]["volume"], 1.025)
+
+        conn = sqlite3.connect(self.db_path)
+        payload_row = conn.execute("SELECT payload_json FROM opname_pending ORDER BY created_at DESC LIMIT 1").fetchone()
+        conn.close()
+        staged_entries = main.json.loads(payload_row[0])[0]["entries"]
+        self.assertTrue(staged_entries[0]["handwritten_edited"])
+        self.assertFalse(staged_entries[2]["handwritten_edited"])
+        self.assertTrue(staged_entries[5]["handwritten_edited"])
 
     @patch("main.upload_file_to_onedrive", return_value=("OD_ITM_TYPO", "https://1drv.ms/u/ARC_TYPO"))
     @patch("main.ensure_monthly_opname_workbook", return_value=("DRV1", "ITM_AGT", "https://1drv.ms/x/AGT"))

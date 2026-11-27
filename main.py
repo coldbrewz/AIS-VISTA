@@ -1784,7 +1784,7 @@ def process_opname_scan_message(
             l_val,
             t_val,
             j_val,
-            allow_countable_jml=dim_edited,
+            allow_countable_jml=(dim_edited or (p_val is None and l_val is None and t_val is None and j_val is not None)),
         )
 
         auto_recalc_dim = False
@@ -1812,7 +1812,23 @@ def process_opname_scan_message(
             warnings.append(r_warn)
 
         jalur = " ".join(p for p in (str(r_obj.get("jalur") or "").strip(), str(r_obj.get("lajur") or "").strip()) if p) or "-"
-        edited_mark = " ✏️ (auto P×L×T)" if auto_recalc_dim else (" ✏️" if is_edited else "")
+        vol_changed_from_vendor = (vol_vnd is None) or (abs(vol_num - vol_vnd) > 0.001)
+        if auto_recalc_dim and vol_changed_from_vendor:
+            is_jml_only = p_val is None and l_val is None and t_val is None
+            edited_mark = " ✏️ (auto)" if is_jml_only else " ✏️ (auto P×L×T)"
+        elif is_edited and vol_opn is None and not vol_changed_from_vendor:
+            edited_mark = " ⚠️✏️ (cek revisi di web)"
+            u_msg = (
+                f"Baris {i_r}: Coretan terdeteksi pada '{boq_item.keyword}' ({loc or wil}), "
+                f"tetapi angka masih sama dengan Vol. Vendor ({vol_num:g}) - cek di web review."
+            )
+            if u_msg not in warn_seen:
+                warn_seen.add(u_msg)
+                warnings.append(u_msg)
+        elif is_edited:
+            edited_mark = " ✏️"
+        else:
+            edited_mark = ""
         preview_lines.append(
             f"{i_r}. *{boq_item.keyword}* (`{boq_item.item_key}`) | {loc or wil} | *{vol_num:g} {boq_item.satuan}*{edited_mark}"
         )
@@ -1836,6 +1852,7 @@ def process_opname_scan_message(
                 "jml": j_val,
                 "vol_vendor": vol_vnd,
                 "volume": round(vol_num, 4),
+                "handwritten_edited": bool(is_edited),
                 "material_status": "",
                 "keterangan": str(r_obj.get("keterangan") or "").strip(),
             }
@@ -1908,10 +1925,16 @@ def process_opname_scan_message(
     warn_block = ("\n\n⚠️ *Catatan Roster:*\n" + "\n".join(f"• {w}" for w in warnings)) if warnings else ""
     review_link = build_review_url(settings.PUBLIC_BASE_URL, scan_id)
     link_block = f"\n\n🌐 *Review & edit cepat (HP / PC):*\n{review_link}" if review_link else ""
+    more_line = (
+        f"\n_... dan {len(preview_lines) - 20} baris lainnya (total {len(preview_lines)} baris)._"
+        if len(preview_lines) > 20
+        else ""
+    )
     preview_msg = (
         f"🔎 *Hasil Scan Opname (`{scan_id}`)*\n"
         f"Aset / Minggu: *{aset}* / *{first_slot['minggu']}* | Vendor: *{first_slot['vendor']}*\n"
         + "\n".join(preview_lines[:20])
+        + more_line
         + warn_block
         + link_block
         + f"\n\n✅ Ketik `/simpan {scan_id}` jika angka sudah benar, atau edit via link di atas / file Excel di bawah."

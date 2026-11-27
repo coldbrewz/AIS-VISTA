@@ -156,6 +156,88 @@ class OpnameOCRStreamTests(unittest.TestCase):
         self.assertEqual(len(res["rows"]), 1)
         self.assertEqual(res["rows"][0]["vol_vendor"], 5.07)
 
+    @patch("services.llm.requests.post")
+    def test_opname_ocr_second_pass_applies_handwritten_corrections(self, mock_post):
+        p1_payload = json.dumps(
+            {
+                "aset": "PV",
+                "vendor": "MIJ",
+                "wilayah": "W1",
+                "minggu": "M3",
+                "rows": [
+                    {
+                        "row_no": "108",
+                        "tanggal": "2026-08-09",
+                        "raw_item": "Permanen",
+                        "p": 6.1,
+                        "l": 2.4,
+                        "t": 0.07,
+                        "vol_vendor": 1.025,
+                        "vol_opname": None,
+                        "dimension_edited": True,
+                        "handwritten_edited": True,
+                    },
+                    {
+                        "row_no": "151",
+                        "tanggal": "2026-08-15",
+                        "raw_item": "Hotmix",
+                        "p": None,
+                        "l": None,
+                        "t": None,
+                        "jml": 5.16,
+                        "vol_vendor": 5.16,
+                        "vol_opname": None,
+                        "dimension_edited": True,
+                        "handwritten_edited": True,
+                    },
+                ],
+            }
+        )
+        p2_payload = json.dumps(
+            {
+                "corrections": [
+                    {
+                        "row_index": 0,
+                        "row_no": "108",
+                        "field": "p",
+                        "crossed_out_printed": 6.1,
+                        "handwritten_replacement": "5,4",
+                    },
+                    {
+                        "row_index": 1,
+                        "row_no": "151",
+                        "field": "jml",
+                        "crossed_out_printed": 5.16,
+                        "handwritten_replacement": 5.0,
+                    },
+                ]
+            }
+        )
+        mock_post.side_effect = [
+            _FakeResponse(
+                headers={"Content-Type": "text/event-stream"},
+                lines=[
+                    f"data: {json.dumps({'choices': [{'delta': {'content': p1_payload}}]})}",
+                    "data: [DONE]",
+                ],
+            ),
+            _FakeResponse(
+                headers={"Content-Type": "text/event-stream"},
+                lines=[
+                    f"data: {json.dumps({'choices': [{'delta': {'content': p2_payload}}]})}",
+                    "data: [DONE]",
+                ],
+            ),
+        ]
+
+        res, err = extract_opname_form_ocr([_tiny_jpeg_bytes()], "PV", "Scan Opname PV M3", "II.1 Permanen\nII.6 Hotmix")
+        self.assertEqual(err, "")
+        self.assertEqual(mock_post.call_count, 2)
+        self.assertAlmostEqual(res["rows"][0]["p"], 5.4)
+        self.assertAlmostEqual(res["rows"][1]["jml"], 5.0)
+        self.assertTrue(res["rows"][0]["dimension_edited"])
+        self.assertTrue(res["rows"][1]["dimension_edited"])
+
 
 if __name__ == "__main__":
     unittest.main()

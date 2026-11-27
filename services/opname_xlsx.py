@@ -286,7 +286,6 @@ def compute_strict_dim_volume(
         and p is None
         and l is None
         and t is None
-        and sat_l not in ("ton", "kg", "liter", "ltr", "ls")
     ):
         return round(jml, 3)
     return None

@@ -248,6 +248,130 @@ def _read_chat_completion_content(resp: requests.Response) -> str:
     return str(choices[0].get("message", {}).get("content", "") or "")
 
 
+def _verify_handwritten_edits_on_page(
+    img_bytes: bytes,
+    page_rows: list[dict],
+    model_name: str,
+    headers: dict[str, str],
+    p_idx: int,
+    total_pages: int,
+) -> None:
+    """
+    Focused second pass for rows flagged as edited/crossed-out on a form page.
+    Reads ONLY handwritten pen replacements without back-calculating from `Vol. Vendor`.
+    """
+    flagged = [
+        {
+            "row_index": idx,
+            "row_no": str(r.get("row_no") or "").strip(),
+            "lokasi": str(r.get("lokasi") or "").strip(),
+            "raw_item": str(r.get("raw_item") or "").strip(),
+            "current": {
+                k: r.get(k)
+                for k in ("p", "l", "t", "jml", "vol_vendor", "vol_opname")
+                if r.get(k) is not None
+            },
+        }
+        for idx, r in enumerate(page_rows)
+        if isinstance(r, dict) and (r.get("handwritten_edited") or r.get("dimension_edited"))
+    ]
+    if not flagged:
+        return
+
+    b64_hi = prepare_image_for_llm(img_bytes, max_size=2400, quality=90)
+    verify_prompt = (
+        "Inspect ONLY the highlighted rows below on this scanned toll road opname form.\n"
+        "A printed number in `P`, `L`, `T`, `Jml`, or `Vol. Vendor` was crossed out or scribbled over with pen ink, "
+        "and a NEW handwritten number was written next to it inside the same cell.\n\n"
+        "Rules:\n"
+        "1. Read ONLY the handwritten pen ink carefully (digit by digit, decimal comma `,` becomes `.`, e.g. `5,4` -> `5.4`, `1,2` -> `1.2`, `2,9` -> `2.9`).\n"
+        "2. Separate the crossed-out printed value into `crossed_out_printed`, and put ONLY the uncrossed handwritten number into `handwritten_replacement`.\n"
+        "3. NEVER back-calculate `P`, `L`, `T`, or `Jml` from `Vol. Vendor` - the handwritten replacement intentionally changes the volume.\n"
+        "4. Return valid JSON ONLY:\n"
+        '{"corrections": [{"row_index": 0, "row_no": "", "field": "p", "crossed_out_printed": 6.1, "handwritten_replacement": 5.4}]}\n\n'
+        f"FLAGGED ROWS TO VERIFY:\n{json.dumps(flagged, ensure_ascii=False)}"
+    )
+    body = {
+        "model": model_name,
+        "messages": [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": verify_prompt},
+                    {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{b64_hi}"}},
+                ],
+            }
+        ],
+        "temperature": 0.0,
+        "stream": True,
+    }
+    t0 = time.monotonic()
+    try:
+        with requests.post(
+            settings.VIKEY_BASE_URL,
+            headers=headers,
+            json=body,
+            timeout=(15, 90),
+            stream=True,
+        ) as resp:
+            if resp.status_code != 200:
+                print(f"[Opname OCR] Page {p_idx}/{total_pages} | Pass 2 skipped (HTTP {resp.status_code})")
+                return
+            raw_content = _read_chat_completion_content(resp)
+        elapsed = time.monotonic() - t0
+        if not raw_content:
+            return
+        parsed = json.loads(extract_json_str(raw_content))
+        corrections = parsed.get("corrections") if isinstance(parsed, dict) else []
+        if not isinstance(corrections, list):
+            return
+
+        applied = 0
+        for corr in corrections:
+            if not isinstance(corr, dict):
+                continue
+            field = str(corr.get("field") or "").strip().lower()
+            if field not in ("p", "l", "t", "jml", "vol_opname"):
+                continue
+            raw_val = corr.get("handwritten_replacement")
+            if raw_val is None or isinstance(raw_val, bool):
+                continue
+            try:
+                new_num = float(str(raw_val).strip().replace(",", "."))
+            except (TypeError, ValueError):
+                continue
+            if new_num <= 0:
+                continue
+
+            target_idx = None
+            raw_ri = corr.get("row_index")
+            raw_rno = str(corr.get("row_no") or "").strip()
+            if isinstance(raw_ri, int) and 0 <= raw_ri < len(page_rows):
+                cand_rno = str(page_rows[raw_ri].get("row_no") or "").strip()
+                if not raw_rno or cand_rno in ("", raw_rno):
+                    target_idx = raw_ri
+            if target_idx is None and raw_rno:
+                for cand_i, cand_r in enumerate(page_rows):
+                    if isinstance(cand_r, dict) and str(cand_r.get("row_no") or "").strip() == raw_rno:
+                        target_idx = cand_i
+                        break
+            if target_idx is None:
+                continue
+
+            row = page_rows[target_idx]
+            row[field] = round(new_num, 4)
+            row["handwritten_edited"] = True
+            if field in ("p", "l", "t", "jml"):
+                row["dimension_edited"] = True
+            applied += 1
+
+        print(
+            f"[Opname OCR] Page {p_idx}/{total_pages} | verified {applied} handwritten correction(s) in {elapsed:.1f}s"
+        )
+    except Exception as e:
+        print(f"[Opname OCR] Page {p_idx}/{total_pages} | Pass 2 warning: {e}")
+
+
 def extract_opname_form_ocr(
     page_images: list[bytes],
     aset_hint: str,
@@ -270,14 +394,15 @@ def extract_opname_form_ocr(
         f"Context hint from user: Aset='{aset_hint or 'auto'}', Caption='{caption or '-'}'.\n\n"
         f"Instructions:\n"
         f"1. Read header fields if visible: aset (PV/GR/SG/WR/RM/LC/CA/DR/FE), wilayah (W1/W2) and vendor from top header box or rows, minggu (M1/M2/M3/M4/M5).\n"
-        f"2. Read every non-empty row from the main opname table. IGNORE completely empty blank rows, and IGNORE the bottom `REKAP VOLUME PER ITEM` summary table and signature block. If a page ONLY contains summary rows or signatures, return `{{\"rows\": []}}`.\n"
+        f"2. Read every non-empty row from the main opname table (include the printed `No.` value in `row_no`). IGNORE completely empty blank rows, and IGNORE the bottom `REKAP VOLUME PER ITEM` summary table and signature block. If a page ONLY contains summary rows or signatures, return `{{\"rows\": []}}`.\n"
         f"   If Tanggal, Minggu, Kode Temuan, or STA/Jalur/Lajur are left blank on subsequent rows at the same location ('ditto'), carry forward the values from the row above.\n"
-        f"3. CRITICAL: If any printed dimension (`P`, `L`, `T`, or `Jml`) is crossed out and replaced by a handwritten number, put the REVISED handwritten number in `p`, `l`, `t`, or `jml`, and set `dimension_edited: true` and `handwritten_edited: true`.\n"
+        f"3. CRITICAL: When a printed number in `P`, `L`, `T`, or `Jml` is scribbled/crossed out (often right-aligned) and a handwritten pen number is written next to it (often on the left), extract ONLY the uncrossed handwritten number into `p`, `l`, `t`, or `jml`, and set `dimension_edited: true` and `handwritten_edited: true`.\n"
+        f"   Convert Indonesian comma decimals to dots (e.g. `5,4` -> `5.4`, `1,2` -> `1.2`, `2,9` -> `2.9`). NEVER back-calculate `P`, `L`, `T`, or `Jml` from `Vol. Vendor`.\n"
         f"4. CRITICAL: Leave `vol_opname` as `null` when the `Vol. Opname` column is blank on paper (do NOT copy `vol_vendor` and do NOT mentally multiply dimensions into `vol_opname`). If a handwritten number is explicitly written in `Vol. Opname` (or crossed out in `Vol. Vendor` and replaced), extract both `vol_vendor` and handwritten `vol_opname`, and set `handwritten_edited: true`.\n"
         f"5. Map `raw_item` strictly using the closest exact keyword or item_key from the BOQ menu below when available.\n"
         f"6. Return valid JSON ONLY (no markdown fences, no commentary):\n"
         f'{{"aset": "", "vendor": "", "wilayah": "", "minggu": "", "rows": ['
-        f'{{"tanggal": "YYYY-MM-DD", "kode_temuan": "", "wilayah": "", "vendor": "", "lokasi": "", "jalur": "", "lajur": "", "raw_item": "", "p": null, "l": null, "t": null, "jml": null, "vol_vendor": null, "vol_opname": null, "keterangan": "", "dimension_edited": false, "handwritten_edited": false}}'
+        f'{{"row_no": "", "tanggal": "YYYY-MM-DD", "kode_temuan": "", "wilayah": "", "vendor": "", "lokasi": "", "jalur": "", "lajur": "", "raw_item": "", "p": null, "l": null, "t": null, "jml": null, "vol_vendor": null, "vol_opname": null, "keterangan": "", "dimension_edited": false, "handwritten_edited": false}}'
         f"]}}\n\n"
         f"OFFICIAL BOQ MENU:\n{boq_menu_text}"
     )
@@ -293,7 +418,7 @@ def extract_opname_form_ocr(
     last_err = ""
 
     for p_idx, img_bytes in enumerate(pages, start=1):
-        b64_page = prepare_image_for_llm(img_bytes, max_size=1600, quality=82)
+        b64_page = prepare_image_for_llm(img_bytes, max_size=2200, quality=88)
         img_kb = max(1, (len(b64_page) * 3) // (4 * 1024))
         body = {
             "model": model_name,
@@ -343,14 +468,23 @@ def extract_opname_form_ocr(
                 page_rows = parsed.get("rows") or []
                 if not isinstance(page_rows, list):
                     page_rows = []
+                page_rows = [r for r in page_rows if isinstance(r, dict)]
                 print(
                     f"[Opname OCR] Page {p_idx}/{total_pages} | model={model_name} | img={img_kb}KB | "
                     f"{elapsed:.1f}s | rows={len(page_rows)}"
                 )
+                _verify_handwritten_edits_on_page(
+                    img_bytes,
+                    page_rows,
+                    model_name,
+                    headers,
+                    p_idx,
+                    total_pages,
+                )
                 for key in ("aset", "vendor", "wilayah", "minggu"):
                     if not merged[key] and parsed.get(key):
                         merged[key] = str(parsed.get(key)).strip()
-                merged["rows"].extend(r for r in page_rows if isinstance(r, dict))
+                merged["rows"].extend(page_rows)
                 page_ok = True
                 break
             except Exception as e:
