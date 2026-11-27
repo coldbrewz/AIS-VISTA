@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 import datetime
 import hashlib
 import hmac
@@ -13,6 +14,7 @@ from fastapi.responses import HTMLResponse, JSONResponse
 
 from config import settings
 from services.message_utils import parse_opname_date_str, resolve_billing_cycle
+from services.microsoft import OPNAME_MONTH_NAMES
 from services.opname_catalog import (
     ASSET_TITLES,
     ASSET_TO_TABLE,
@@ -42,6 +44,7 @@ from services.opname_web_ui import (
     render_review_page_html,
 )
 from services.opname_xlsx import _items_for_asset_boq, build_prefilled_standard_xlsx
+from services.tagihan_generator import parse_tagihan_cycle
 
 _XLSX_MIME = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
 
@@ -1005,6 +1008,141 @@ def create_opname_web_router(deps: dict[str, Any]) -> APIRouter:
             "slot_urls": slot_urls,
         }
 
+    def _parse_web_cycle(raw_cycle: str) -> tuple[int, int, str]:
+        c_str = (raw_cycle or "").strip()
+        if not c_str:
+            m, y = resolve_billing_cycle(datetime.date.today())
+            return m, y, f"{y:04d}-{m:02d}"
+        m_ym = re.fullmatch(r"(\d{4})-(\d{1,2})", c_str)
+        if m_ym:
+            cy, cm = int(m_ym.group(1)), int(m_ym.group(2))
+            if 1 <= cm <= 12:
+                return cm, cy, f"{cy:04d}-{cm:02d}"
+        raise HTTPException(status_code=422, detail="Format siklus harus YYYY-MM.")
+
+    def _decode_xlsx_b64(file_b64: str) -> bytes:
+        raw_s = (file_b64 or "").strip()
+        if not raw_s:
+            return b""
+        if raw_s.startswith("data:") and "," in raw_s:
+            raw_s = raw_s.split(",", 1)[1]
+        try:
+            raw = base64.b64decode(raw_s, validate=True)
+        except Exception:
+            raise HTTPException(status_code=422, detail="File base64 tidak valid.")
+        if len(raw) > 25 * 1024 * 1024:
+            raise HTTPException(status_code=422, detail="Ukuran file maksimal 25 MB.")
+        if not raw.startswith(b"PK\x03\x04"):
+            raise HTTPException(status_code=422, detail="File harus berupa .xlsx yang valid.")
+        return raw
+
+    def _get_tagihan_status(db_path: str, raw_cycle: str = "") -> dict[str, Any]:
+        cycle_m, cycle_y, cycle_key = _parse_web_cycle(raw_cycle)
+        month_label = OPNAME_MONTH_NAMES.get(cycle_m, f"{cycle_m:02d}")
+        prev_m, prev_y = (12, cycle_y - 1) if cycle_m == 1 else (cycle_m - 1, cycle_y)
+        prev_cycle_key = f"{prev_y:04d}-{prev_m:02d}"
+        yy_mm = f"{cycle_y % 100:02d}{cycle_m:02d}"
+        dash_tok = make_opname_token("DASHBOARD")
+
+        def _arc_payload(row_t: tuple | None) -> dict[str, Any] | None:
+            if not row_t:
+                return None
+            aid, ck, fname, itm_id, w_url, r_cnt, cr_at = row_t
+            return {
+                "archive_id": aid,
+                "cycle_key": ck,
+                "filename": fname or "",
+                "item_id": itm_id or "",
+                "web_url": w_url or "",
+                "sheet_count": int(r_cnt or 0),
+                "created_at": cr_at or "",
+                "download_url": f"/api/opname/tagihan/download/{aid}?token={dash_tok}",
+            }
+
+        conn = sqlite3.connect(db_path)
+        try:
+            wb_row = conn.execute(
+                "SELECT COALESCE(web_url, ''), COALESCE(created_at, '') FROM opname_workbooks WHERE cycle_key = ?",
+                (cycle_key,),
+            ).fetchone()
+            slot_ids = {
+                str(r[0]).upper()
+                for r in conn.execute(
+                    "SELECT slot_id FROM opname_slots WHERE cycle_key = ? AND status = 'ACTIVE'",
+                    (cycle_key,),
+                ).fetchall()
+                if r and r[0]
+            }
+            slot_ids.update(
+                str(r[0]).upper()
+                for r in conn.execute(
+                    "SELECT DISTINCT opname_id FROM opname_entries WHERE status = 'ACTIVE' AND opname_id LIKE ?",
+                    (f"XLS-{yy_mm}-%",),
+                ).fetchall()
+                if r and r[0]
+            )
+            prev_out = conn.execute(
+                """
+                SELECT archive_id, cycle_key, file_path, COALESCE(item_id, ''), COALESCE(web_url, ''), COALESCE(row_count, 0), COALESCE(created_at, '')
+                FROM opname_archives
+                WHERE source_type = 'TAGIHAN_OUTPUT' AND cycle_key = ? AND item_id != ''
+                ORDER BY archive_id DESC LIMIT 1
+                """,
+                (prev_cycle_key,),
+            ).fetchone()
+            cur_out = conn.execute(
+                """
+                SELECT archive_id, cycle_key, file_path, COALESCE(item_id, ''), COALESCE(web_url, ''), COALESCE(row_count, 0), COALESCE(created_at, '')
+                FROM opname_archives
+                WHERE source_type = 'TAGIHAN_OUTPUT' AND cycle_key = ? AND item_id != ''
+                ORDER BY archive_id DESC LIMIT 1
+                """,
+                (cycle_key,),
+            ).fetchone()
+            latest_out = conn.execute(
+                """
+                SELECT archive_id, cycle_key, file_path, COALESCE(item_id, ''), COALESCE(web_url, ''), COALESCE(row_count, 0), COALESCE(created_at, '')
+                FROM opname_archives
+                WHERE source_type = 'TAGIHAN_OUTPUT' AND item_id != ''
+                ORDER BY cycle_key DESC, archive_id DESC LIMIT 1
+                """
+            ).fetchone()
+            cur_tmpl = conn.execute(
+                """
+                SELECT file_path, COALESCE(item_id, '')
+                FROM opname_archives
+                WHERE source_type = 'TAGIHAN_TEMPLATE' AND item_id != ''
+                ORDER BY (CASE WHEN cycle_key = ? THEN 0 ELSE 1 END), archive_id DESC LIMIT 1
+                """,
+                (cycle_key,),
+            ).fetchone()
+            hist_rows = conn.execute(
+                """
+                SELECT archive_id, cycle_key, file_path, COALESCE(item_id, ''), COALESCE(web_url, ''), COALESCE(row_count, 0), COALESCE(created_at, '')
+                FROM opname_archives
+                WHERE source_type = 'TAGIHAN_OUTPUT' AND item_id != ''
+                ORDER BY cycle_key DESC, archive_id DESC LIMIT 12
+                """
+            ).fetchall()
+        finally:
+            conn.close()
+
+        return {
+            "cycle_key": cycle_key,
+            "month_label": month_label,
+            "prev_cycle_key": prev_cycle_key,
+            "silo_filename": f"DATA_UNTUK_VOL_{month_label}_{cycle_y}.xlsx",
+            "silo_ready": bool((wb_row and wb_row[0]) or len(slot_ids) > 0 or not settings.OPNAME_AUTO_MONTHLY),
+            "silo_web_url": (wb_row[0] if wb_row else "") or "",
+            "active_slot_count": len(slot_ids),
+            "prev_baseline": _arc_payload(prev_out),
+            "current_output": _arc_payload(cur_out),
+            "latest_output": _arc_payload(latest_out),
+            "has_cached_template": bool(cur_tmpl and cur_tmpl[1]),
+            "has_env_template_link": bool(settings.TAGIHAN_TEMPLATE_SHARE_LINK),
+            "history": [_arc_payload(hr) for hr in hist_rows if hr],
+        }
+
     def _sync_roster_best_effort(db_path: str) -> tuple[bool, str]:
         upload_fn = deps.get("upload_private_onedrive")
         if not upload_fn:
@@ -1166,5 +1304,131 @@ def create_opname_web_router(deps: dict[str, Any]) -> APIRouter:
             "sync_note": note,
             "roster": export_roster_payload(db_path),
         }
+
+    @router.get("/api/opname/tagihan/status")
+    def api_tagihan_status(token: str = Query(""), cycle: str = Query("")):
+        if not verify_opname_token("DASHBOARD", token):
+            raise HTTPException(status_code=403, detail="Token dashboard tidak valid.")
+        return _get_tagihan_status(_db_url(), cycle)
+
+    @router.post("/api/opname/tagihan/baseline")
+    async def api_save_tagihan_baseline(request: Request, token: str = Query("")):
+        if not verify_opname_token("DASHBOARD", token):
+            raise HTTPException(status_code=403, detail="Token dashboard tidak valid.")
+        save_fn = deps.get("save_tagihan_baseline")
+        if not save_fn:
+            raise HTTPException(status_code=501, detail="Fungsi baseline Tagihan belum terhubung.")
+        try:
+            body = await request.json()
+        except Exception:
+            raise HTTPException(status_code=400, detail="Payload JSON tidak valid.")
+        if not isinstance(body, dict):
+            raise HTTPException(status_code=400, detail="Payload JSON harus berupa objek.")
+
+        raw_bytes = _decode_xlsx_b64(str(body.get("file_b64") or ""))
+        if not raw_bytes:
+            raise HTTPException(status_code=422, detail="File Excel MC (.xlsx) wajib dipilih.")
+        filename = str(body.get("filename") or "").strip() or "MC_BASELINE.xlsx"
+        raw_cycle = str(body.get("cycle") or "").strip()
+        if raw_cycle:
+            cycle_m, cycle_y, _ = _parse_web_cycle(raw_cycle)
+        else:
+            cycle_m, cycle_y = parse_tagihan_cycle("", template_filename=filename)
+
+        try:
+            saved = save_fn(cycle_m, cycle_y, filename, raw_bytes)
+        except ValueError as val_err:
+            raise HTTPException(status_code=422, detail=str(val_err))
+        except Exception as exc:
+            raise HTTPException(status_code=502, detail=f"Gagal menyimpan baseline Tagihan ke OneDrive: {exc}")
+
+        next_cycle = saved.get("next_cycle_key") or f"{cycle_y:04d}-{cycle_m:02d}"
+        return {
+            "ok": True,
+            "baseline": saved,
+            "status": _get_tagihan_status(_db_url(), next_cycle),
+        }
+
+    @router.post("/api/opname/tagihan/generate")
+    async def api_generate_tagihan(request: Request, token: str = Query("")):
+        if not verify_opname_token("DASHBOARD", token):
+            raise HTTPException(status_code=403, detail="Token dashboard tidak valid.")
+        gen_fn = deps.get("run_tagihan_generation")
+        if not gen_fn:
+            raise HTTPException(status_code=501, detail="Generator Tagihan belum terhubung.")
+        try:
+            body = await request.json()
+        except Exception:
+            body = {}
+        if not isinstance(body, dict):
+            raise HTTPException(status_code=400, detail="Payload JSON harus berupa objek.")
+
+        raw_bytes = _decode_xlsx_b64(str(body.get("file_b64") or ""))
+        filename = str(body.get("filename") or "").strip()
+        raw_cycle = str(body.get("cycle") or "").strip()
+        if raw_cycle:
+            cycle_m, cycle_y, _ = _parse_web_cycle(raw_cycle)
+        elif filename:
+            cycle_m, cycle_y = parse_tagihan_cycle("", template_filename=filename)
+        else:
+            cycle_m, cycle_y, _ = _parse_web_cycle("")
+
+        try:
+            res = gen_fn(cycle_m, cycle_y, tmpl_bytes=raw_bytes, tmpl_filename=filename)
+        except ValueError as val_err:
+            raise HTTPException(status_code=422, detail=str(val_err))
+        except RuntimeError as run_err:
+            raise HTTPException(status_code=502, detail=str(run_err))
+        except Exception as exc:
+            raise HTTPException(status_code=502, detail=f"Gagal membuat Tagihan MC: {exc}")
+
+        return {
+            "ok": True,
+            "cycle_key": res["cycle_key"],
+            "prev_cycle_key": res["prev_cycle_key"],
+            "month_label": res["month_label"],
+            "output_filename": res["output_filename"],
+            "web_url": res.get("web_url") or "",
+            "archive_id": res.get("archive_id") or 0,
+            "download_url": (
+                f"/api/opname/tagihan/download/{res['archive_id']}?token={token}"
+                if res.get("archive_id")
+                else ""
+            ),
+            "rollover_applied": bool(res.get("rollover_applied")),
+            "ordered_sheets": list(res.get("ordered_sheets") or []),
+            "grand_totals": dict(res.get("grand_totals") or {}),
+            "total_grand": float(res.get("total_grand") or 0.0),
+            "warnings": list(res.get("warnings") or []),
+            "status": _get_tagihan_status(_db_url(), res["cycle_key"]),
+        }
+
+    @router.get("/api/opname/tagihan/download/{archive_id}")
+    def api_download_tagihan(archive_id: int, token: str = Query("")):
+        if not verify_opname_token("DASHBOARD", token):
+            raise HTTPException(status_code=403, detail="Token dashboard tidak valid.")
+        dl_fn = deps.get("download_onedrive")
+        if not dl_fn:
+            raise HTTPException(status_code=501, detail="Download OneDrive belum terhubung.")
+        conn = sqlite3.connect(_db_url())
+        try:
+            row = conn.execute(
+                "SELECT file_path, COALESCE(item_id, ''), source_type FROM opname_archives WHERE archive_id = ?",
+                (archive_id,),
+            ).fetchone()
+        finally:
+            conn.close()
+        if not row or not row[1] or row[2] != "TAGIHAN_OUTPUT":
+            raise HTTPException(status_code=404, detail="Arsip Tagihan tidak ditemukan.")
+        fname = (row[0] or "TAGIHAN_MC.xlsx").replace('"', "_")
+        raw = dl_fn(row[1])
+        return Response(
+            content=raw,
+            media_type=_XLSX_MIME,
+            headers={
+                "Content-Disposition": f'attachment; filename="{fname}"',
+                "Cache-Control": "no-store",
+            },
+        )
 
     return router

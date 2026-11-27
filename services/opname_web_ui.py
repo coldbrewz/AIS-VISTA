@@ -1543,6 +1543,9 @@ main.review-main {{
 
                 const diffParts = [];
                 if (!isRemoved && !isAdded) {{
+                    if (row.vendor_keyword && row.vendor_item_key && row.vendor_item_key !== row.item_key) {{
+                        diffParts.push("Item " + row.vendor_keyword + " -> " + (row.keyword || row.item_key));
+                    }}
                     [["P", "p", "vendor_p"], ["L", "l", "vendor_l"], ["T", "t", "vendor_t"], ["Jml", "jml", "vendor_jml"]].forEach(function(pair) {{
                         const lbl = pair[0], k = pair[1], vk = pair[2];
                         if (row[vk] != null && row[vk] !== "" && row[k] != null && row[k] !== "") {{
@@ -2206,6 +2209,24 @@ main.list-main {{
     accent-color: var(--accent);
 }}
 
+.tagihan-form-grid {{
+    display: grid;
+    grid-template-columns: minmax(0, 1fr);
+    gap: 12px;
+    margin-bottom: 14px;
+}}
+
+.tagihan-form-grid > * {{
+    min-width: 0;
+}}
+
+.tagihan-summary-strip {{
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    margin-bottom: 14px;
+}}
+
 @media (min-width: 960px) {{
     main.list-main {{
         padding: 20px 24px 60px 24px;
@@ -2217,6 +2238,11 @@ main.list-main {{
 
     .roster-form-grid {{
         grid-template-columns: 160px 1fr 220px 120px;
+        align-items: end;
+    }}
+
+    .tagihan-form-grid {{
+        grid-template-columns: 180px 1fr;
         align-items: end;
     }}
 
@@ -2277,6 +2303,7 @@ main.list-main {{
         <div class="tabs-bar" role="tablist" aria-label="Menu Opname">
             <button type="button" role="tab" id="tabSlotsBtn" class="tab-btn is-active" aria-selected="true" aria-controls="panelSlots">Slot &amp; Review</button>
             <button type="button" role="tab" id="tabRosterBtn" class="tab-btn" aria-selected="false" aria-controls="panelRoster">Vendor &amp; Roster</button>
+            <button type="button" role="tab" id="tabTagihanBtn" class="tab-btn" aria-selected="false" aria-controls="panelTagihan">Tagihan (MC)</button>
         </div>
 
         <div id="panelSlots" role="tabpanel" aria-labelledby="tabSlotsBtn">
@@ -2450,6 +2477,79 @@ main.list-main {{
                 </div>
             </section>
         </div>
+
+        <div id="panelTagihan" class="hidden" role="tabpanel" aria-labelledby="tabTagihanBtn">
+            <div id="tagihanFeedback" class="banner hidden" role="status" aria-live="polite"></div>
+
+            <section class="panel" style="margin-bottom: 16px;" aria-labelledby="tagihanGenTitle">
+                <h2 id="tagihanGenTitle" style="margin: 0 0 12px 0; font-size: 1.05rem;">Generate Tagihan Bulanan (MC)</h2>
+                <div class="tagihan-form-grid">
+                    <div>
+                        <label class="field-label" for="tgCycleInput">Siklus Tagihan (YYYY-MM)</label>
+                        <input id="tgCycleInput" class="input input-mono" type="month" />
+                    </div>
+                    <div>
+                        <label class="field-label" for="tgTemplateFile">Template MC Khusus (Opsional - kosongkan untuk auto-rollover)</label>
+                        <input id="tgTemplateFile" class="input" type="file" accept=".xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" />
+                    </div>
+                </div>
+                <div id="tgStatusSummary" class="tagihan-summary-strip"></div>
+                <div style="display: flex; flex-wrap: wrap; gap: 10px; align-items: center;">
+                    <button type="button" class="btn btn-primary" id="tgGenerateBtn">Generate Tagihan MC</button>
+                    <a class="btn hidden" id="tgExistingDownloadBtn" href="#">Unduh MC Siklus Ini</a>
+                    <a class="btn hidden" id="tgExistingOnedriveLink" href="#" target="_blank" rel="noopener">Buka MC di OneDrive</a>
+                </div>
+                <div id="tgResultBox" class="banner banner-success hidden" style="margin-top: 14px; margin-bottom: 0;" role="status"></div>
+            </section>
+
+            <section class="panel" style="margin-bottom: 16px;" aria-labelledby="tagihanBaseTitle">
+                <h2 id="tagihanBaseTitle" style="margin: 0 0 8px 0; font-size: 1.05rem;">Simpan Baseline MC Bulan Lalu</h2>
+                <p style="margin: 0 0 12px 0; font-size: 0.9rem; color: var(--text-secondary);">
+                    Unggah file MC bulan sebelumnya sekali (setara <span class="mono">/tagihan base YYYY-MM</span>) agar <span class="mono">S.D. BULAN LALU</span> terakumulasi otomatis di bulan berikutnya.
+                </p>
+                <form id="tagihanBaseForm">
+                    <div class="tagihan-form-grid">
+                        <div>
+                            <label class="field-label" for="tgBaseCycleInput">Siklus Baseline (YYYY-MM)</label>
+                            <input id="tgBaseCycleInput" class="input input-mono" type="month" required />
+                        </div>
+                        <div>
+                            <label class="field-label" for="tgBaseFile">File Excel MC (.xlsx)</label>
+                            <input id="tgBaseFile" class="input" type="file" accept=".xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" required />
+                        </div>
+                    </div>
+                    <button type="submit" class="btn" id="tgBaseSubmitBtn">Simpan Baseline MC</button>
+                </form>
+            </section>
+
+            <section class="panel" aria-labelledby="tagihanHistTitle">
+                <div class="roster-filter-row">
+                    <h2 id="tagihanHistTitle" style="margin: 0; font-size: 1.05rem;">Riwayat Tagihan (MC)</h2>
+                    <button type="button" class="btn btn-sm" id="tgRefreshBtn">Muat Ulang</button>
+                </div>
+                <div id="tagihanLoading" class="state-box" style="margin: 12px 0;" role="status">
+                    <p style="margin: 0;">Memuat status &amp; riwayat Tagihan MC...</p>
+                </div>
+                <div id="tagihanMobileContainer" class="slot-cards mobile-slots-only"></div>
+                <div class="desktop-table-wrap" id="tagihanTableWrap">
+                    <table class="slots-table">
+                        <thead>
+                            <tr>
+                                <th>Siklus</th>
+                                <th>File MC</th>
+                                <th>Sheet Aktif</th>
+                                <th>Dibuat</th>
+                                <th>Aksi</th>
+                            </tr>
+                        </thead>
+                        <tbody id="tagihanTableBody"></tbody>
+                    </table>
+                </div>
+                <div id="tagihanEmptyBox" class="hidden" style="padding: 16px 0; text-align: center; color: var(--text-secondary);">
+                    Belum ada baseline atau hasil Tagihan MC tersimpan.
+                </div>
+            </section>
+        </div>
     </main>
 
     <script>
@@ -2472,8 +2572,28 @@ main.list-main {{
 
         const tabSlotsBtn = document.getElementById("tabSlotsBtn");
         const tabRosterBtn = document.getElementById("tabRosterBtn");
+        const tabTagihanBtn = document.getElementById("tabTagihanBtn");
         const panelSlots = document.getElementById("panelSlots");
         const panelRoster = document.getElementById("panelRoster");
+        const panelTagihan = document.getElementById("panelTagihan");
+        const tagihanFeedback = document.getElementById("tagihanFeedback");
+        const tgCycleInput = document.getElementById("tgCycleInput");
+        const tgTemplateFile = document.getElementById("tgTemplateFile");
+        const tgStatusSummary = document.getElementById("tgStatusSummary");
+        const tgGenerateBtn = document.getElementById("tgGenerateBtn");
+        const tgExistingDownloadBtn = document.getElementById("tgExistingDownloadBtn");
+        const tgExistingOnedriveLink = document.getElementById("tgExistingOnedriveLink");
+        const tgResultBox = document.getElementById("tgResultBox");
+        const tagihanBaseForm = document.getElementById("tagihanBaseForm");
+        const tgBaseCycleInput = document.getElementById("tgBaseCycleInput");
+        const tgBaseFile = document.getElementById("tgBaseFile");
+        const tgBaseSubmitBtn = document.getElementById("tgBaseSubmitBtn");
+        const tgRefreshBtn = document.getElementById("tgRefreshBtn");
+        const tagihanLoading = document.getElementById("tagihanLoading");
+        const tagihanMobileContainer = document.getElementById("tagihanMobileContainer");
+        const tagihanTableWrap = document.getElementById("tagihanTableWrap");
+        const tagihanTableBody = document.getElementById("tagihanTableBody");
+        const tagihanEmptyBox = document.getElementById("tagihanEmptyBox");
         const rosterFeedback = document.getElementById("rosterFeedback");
         const rosterAddForm = document.getElementById("rosterAddForm");
         const rvCode = document.getElementById("rvCode");
@@ -2739,16 +2859,153 @@ main.list-main {{
                 }});
         }}
 
+        function showTagihanBanner(type, text) {{
+            tagihanFeedback.className = "banner " + (type === "success" ? "banner-success" : (type === "warn" ? "banner-warn" : "banner-error"));
+            tagihanFeedback.setAttribute("role", type === "error" ? "alert" : "status");
+            tagihanFeedback.innerHTML = '<div class="banner-title">' + esc(text) + '</div>';
+            tagihanFeedback.classList.remove("hidden");
+        }}
+
+        function formatRp(val) {{
+            return "Rp " + Number(val || 0).toLocaleString("id-ID", {{ minimumFractionDigits: 2, maximumFractionDigits: 2 }});
+        }}
+
+        function readFileAsBase64(file) {{
+            return new Promise(function(resolve, reject) {{
+                const reader = new FileReader();
+                reader.onload = function() {{
+                    resolve({{ filename: file.name, file_b64: String(reader.result || "") }});
+                }};
+                reader.onerror = function() {{
+                    reject(new Error("Gagal membaca file " + file.name));
+                }};
+                reader.readAsDataURL(file);
+            }});
+        }}
+
+        function renderTagihanStatus(data) {{
+            if (!data) return;
+            if (!tgCycleInput.value || tgCycleInput.value !== data.cycle_key) {{
+                tgCycleInput.value = data.cycle_key;
+            }}
+            if (!tgBaseCycleInput.value && data.prev_cycle_key) {{
+                tgBaseCycleInput.value = data.prev_cycle_key;
+            }}
+
+            const tags = [];
+            if (data.silo_ready) {{
+                tags.push('<span class="tag tag-success">Data Siap: ' + esc(data.silo_filename) + ' (' + esc(data.active_slot_count || 0) + ' slot)</span>');
+            }} else {{
+                tags.push('<span class="tag tag-warn">Data Belum Ada: ' + esc(data.silo_filename) + '</span>');
+            }}
+            if (data.prev_baseline) {{
+                tags.push('<span class="tag tag-success">Rollover S.D. Bulan Lalu: ' + esc(data.prev_baseline.cycle_key) + '</span>');
+            }} else if (data.has_cached_template || data.has_env_template_link) {{
+                tags.push('<span class="tag tag-warn">Template MC Tersedia (tanpa rollover ' + esc(data.prev_cycle_key) + ')</span>');
+            }} else {{
+                tags.push('<span class="tag tag-error">Belum Ada Baseline / Template MC</span>');
+            }}
+            tgStatusSummary.innerHTML = tags.join("");
+
+            if (data.current_output && data.current_output.download_url) {{
+                tgExistingDownloadBtn.href = data.current_output.download_url;
+                tgExistingDownloadBtn.classList.remove("hidden");
+            }} else {{
+                tgExistingDownloadBtn.classList.add("hidden");
+            }}
+            if (data.current_output && data.current_output.web_url) {{
+                tgExistingOnedriveLink.href = data.current_output.web_url;
+                tgExistingOnedriveLink.classList.remove("hidden");
+            }} else {{
+                tgExistingOnedriveLink.classList.add("hidden");
+            }}
+
+            const hist = data.history || [];
+            if (hist.length === 0) {{
+                tagihanMobileContainer.innerHTML = "";
+                tagihanTableBody.innerHTML = "";
+                tagihanTableWrap.classList.add("hidden");
+                tagihanEmptyBox.classList.remove("hidden");
+                return;
+            }}
+
+            tagihanEmptyBox.classList.add("hidden");
+            tagihanTableWrap.classList.remove("hidden");
+            tagihanMobileContainer.innerHTML = hist.map(function(h) {{
+                const odBtn = h.web_url
+                    ? '<a class="btn btn-sm" href="' + esc(h.web_url) + '" target="_blank" rel="noopener">OneDrive</a>'
+                    : '';
+                return '<div class="slot-card">' +
+                    '<div class="slot-card-head">' +
+                        '<strong class="mono">' + esc(h.cycle_key) + '</strong>' +
+                        '<span class="tag">' + esc(h.sheet_count > 0 ? (h.sheet_count + " sheet") : "Baseline") + '</span>' +
+                    '</div>' +
+                    '<div class="slot-meta">' + esc(h.filename) + '</div>' +
+                    '<div class="slot-meta">Dibuat: ' + esc(h.created_at || "-") + '</div>' +
+                    '<div class="slot-actions">' +
+                        '<a class="btn btn-sm" href="' + esc(h.download_url) + '">Unduh Excel</a>' +
+                        odBtn +
+                    '</div>' +
+                '</div>';
+            }}).join("");
+
+            tagihanTableBody.innerHTML = hist.map(function(h) {{
+                const odBtn = h.web_url
+                    ? '<a class="btn btn-sm" href="' + esc(h.web_url) + '" target="_blank" rel="noopener">OneDrive</a>'
+                    : '';
+                return '<tr>' +
+                    '<td class="mono" style="font-weight: 600;">' + esc(h.cycle_key) + '</td>' +
+                    '<td>' + esc(h.filename) + '</td>' +
+                    '<td class="mono">' + esc(h.sheet_count > 0 ? String(h.sheet_count) : "Baseline") + '</td>' +
+                    '<td class="mono">' + esc(h.created_at || "-") + '</td>' +
+                    '<td><div style="display: flex; gap: 8px;"><a class="btn btn-sm" href="' + esc(h.download_url) + '">Unduh</a>' + odBtn + '</div></td>' +
+                '</tr>';
+            }}).join("");
+        }}
+
+        function loadTagihanStatus(rawCycle) {{
+            tagihanLoading.classList.remove("hidden");
+            tagihanTableWrap.classList.add("hidden");
+            tagihanEmptyBox.classList.add("hidden");
+            const params = new URLSearchParams({{ token: TOKEN }});
+            if (rawCycle) params.set("cycle", rawCycle);
+            fetch("/api/opname/tagihan/status?" + params.toString())
+                .then(function(resp) {{
+                    return resp.json().then(function(b) {{
+                        if (!resp.ok) throw new Error((b && b.detail) || ("Status " + resp.status));
+                        return b;
+                    }});
+                }})
+                .then(function(data) {{
+                    tagihanLoading.classList.add("hidden");
+                    renderTagihanStatus(data);
+                }})
+                .catch(function(err) {{
+                    tagihanLoading.classList.add("hidden");
+                    showTagihanBanner("error", "ERROR: Gagal memuat status Tagihan: " + err.message);
+                }});
+        }}
+
         function activateTab(tabName) {{
             const isRoster = tabName === "roster";
-            tabSlotsBtn.classList.toggle("is-active", !isRoster);
-            tabSlotsBtn.setAttribute("aria-selected", !isRoster ? "true" : "false");
+            const isTagihan = tabName === "tagihan";
+            const isSlots = !isRoster && !isTagihan;
+
+            tabSlotsBtn.classList.toggle("is-active", isSlots);
+            tabSlotsBtn.setAttribute("aria-selected", isSlots ? "true" : "false");
             tabRosterBtn.classList.toggle("is-active", isRoster);
             tabRosterBtn.setAttribute("aria-selected", isRoster ? "true" : "false");
-            panelSlots.classList.toggle("hidden", isRoster);
+            tabTagihanBtn.classList.toggle("is-active", isTagihan);
+            tabTagihanBtn.setAttribute("aria-selected", isTagihan ? "true" : "false");
+
+            panelSlots.classList.toggle("hidden", !isSlots);
             panelRoster.classList.toggle("hidden", !isRoster);
+            panelTagihan.classList.toggle("hidden", !isTagihan);
+
             if (isRoster) {{
                 loadRoster();
+            }} else if (isTagihan) {{
+                loadTagihanStatus(tgCycleInput.value || cycleSelect.value || "");
             }} else {{
                 loadList(cycleSelect.value);
             }}
@@ -2756,8 +3013,112 @@ main.list-main {{
 
         tabSlotsBtn.addEventListener("click", function() {{ activateTab("slots"); }});
         tabRosterBtn.addEventListener("click", function() {{ activateTab("roster"); }});
+        tabTagihanBtn.addEventListener("click", function() {{ activateTab("tagihan"); }});
         rosterAsetFilter.addEventListener("change", renderRosterList);
         showInactiveChk.addEventListener("change", renderRosterList);
+
+        tgCycleInput.addEventListener("change", function() {{ loadTagihanStatus(tgCycleInput.value); }});
+        tgRefreshBtn.addEventListener("click", function() {{ loadTagihanStatus(tgCycleInput.value); }});
+
+        tgGenerateBtn.addEventListener("click", function() {{
+            tagihanFeedback.classList.add("hidden");
+            tgResultBox.classList.add("hidden");
+            tgGenerateBtn.disabled = true;
+            tgGenerateBtn.textContent = "Memproses Tagihan MC...";
+
+            const fileObj = tgTemplateFile.files && tgTemplateFile.files[0];
+            const readPromise = fileObj ? readFileAsBase64(fileObj) : Promise.resolve({{ filename: "", file_b64: "" }});
+            readPromise
+                .then(function(fData) {{
+                    return fetch("/api/opname/tagihan/generate?token=" + encodeURIComponent(TOKEN), {{
+                        method: "POST",
+                        headers: {{ "Content-Type": "application/json" }},
+                        body: JSON.stringify({{
+                            cycle: tgCycleInput.value || "",
+                            filename: fData.filename,
+                            file_b64: fData.file_b64,
+                        }}),
+                    }});
+                }})
+                .then(function(resp) {{ return resp.json().then(function(b) {{ return {{ ok: resp.ok, body: b }}; }}); }})
+                .then(function(res) {{
+                    if (!res.ok) throw new Error((res.body && res.body.detail) || "Gagal generate Tagihan MC.");
+                    const d = res.body;
+                    tgTemplateFile.value = "";
+                    if (d.status) renderTagihanStatus(d.status);
+
+                    const sheetItems = (d.ordered_sheets || []).filter(function(s) {{
+                        return Number((d.grand_totals || {{}})[s] || 0) > 0;
+                    }}).map(function(s) {{
+                        return '<li>' + esc(s + ": " + formatRp(d.grand_totals[s])) + '</li>';
+                    }}).join("");
+                    const warnItems = (d.warnings || []).slice(0, 5).map(function(w) {{
+                        return '<li style="color: var(--warn-text);">' + esc("Catatan: " + w) + '</li>';
+                    }}).join("");
+                    const rollLine = d.rollover_applied
+                        ? '<p style="margin: 0 0 6px 0;">Rollover S.D. BULAN LALU: <strong class="mono">' + esc(d.prev_cycle_key) + '</strong></p>'
+                        : '';
+                    const dlBtn = d.download_url
+                        ? '<a class="btn btn-primary btn-sm" href="' + esc(d.download_url) + '">Unduh ' + esc(d.output_filename) + '</a>'
+                        : '';
+                    const odBtn = d.web_url
+                        ? '<a class="btn btn-sm" href="' + esc(d.web_url) + '" target="_blank" rel="noopener">Buka di OneDrive</a>'
+                        : '';
+                    tgResultBox.innerHTML =
+                        '<div class="banner-title">' + esc("OK: Tagihan MC Selesai (" + d.month_label + " " + d.cycle_key.slice(0, 4) + ")") + '</div>' +
+                        rollLine +
+                        '<p style="margin: 0 0 8px 0;">Total Pilar 1 (sheet aktif): <strong class="mono">' + esc(formatRp(d.total_grand)) + '</strong></p>' +
+                        ((sheetItems || warnItems) ? '<ul>' + sheetItems + warnItems + '</ul>' : '') +
+                        '<div style="display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px;">' + dlBtn + odBtn + '</div>';
+                    tgResultBox.classList.remove("hidden");
+                }})
+                .catch(function(err) {{
+                    showTagihanBanner("error", err.message || "Gagal generate Tagihan MC.");
+                }})
+                .finally(function() {{
+                    tgGenerateBtn.disabled = false;
+                    tgGenerateBtn.textContent = "Generate Tagihan MC";
+                }});
+        }});
+
+        tagihanBaseForm.addEventListener("submit", function(e) {{
+            e.preventDefault();
+            const fObj = tgBaseFile.files && tgBaseFile.files[0];
+            if (!fObj) {{
+                showTagihanBanner("error", "Pilih file Excel MC (.xlsx) terlebih dahulu.");
+                return;
+            }}
+            tagihanFeedback.classList.add("hidden");
+            tgBaseSubmitBtn.disabled = true;
+            tgBaseSubmitBtn.textContent = "Mengunggah Baseline...";
+            readFileAsBase64(fObj)
+                .then(function(fData) {{
+                    return fetch("/api/opname/tagihan/baseline?token=" + encodeURIComponent(TOKEN), {{
+                        method: "POST",
+                        headers: {{ "Content-Type": "application/json" }},
+                        body: JSON.stringify({{
+                            cycle: tgBaseCycleInput.value || "",
+                            filename: fData.filename,
+                            file_b64: fData.file_b64,
+                        }}),
+                    }});
+                }})
+                .then(function(resp) {{ return resp.json().then(function(b) {{ return {{ ok: resp.ok, body: b }}; }}); }})
+                .then(function(res) {{
+                    if (!res.ok) throw new Error((res.body && res.body.detail) || "Gagal menyimpan baseline Tagihan.");
+                    const b = res.body.baseline || {{}};
+                    tgBaseFile.value = "";
+                    if (res.body.status) renderTagihanStatus(res.body.status);
+                    showTagihanBanner("success", "OK: Baseline " + (b.cycle_key || "") + " tersimpan. Siap generate " + (b.next_cycle_key || "") + ".");
+                }})
+                .catch(function(err) {{
+                    showTagihanBanner("error", "ERROR: " + err.message);
+                }})
+                .finally(function() {{
+                    tgBaseSubmitBtn.disabled = false;
+                    tgBaseSubmitBtn.textContent = "Simpan Baseline MC";
+                }});
+        }});
 
         rosterAddForm.addEventListener("submit", function(e) {{
             e.preventDefault();
@@ -2839,6 +3200,8 @@ main.list-main {{
 
         if (window.location.hash === "#roster") {{
             activateTab("roster");
+        }} else if (window.location.hash === "#tagihan") {{
+            activateTab("tagihan");
         }} else {{
             loadList("");
         }}

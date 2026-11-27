@@ -1,3 +1,4 @@
+import base64
 import datetime
 import io
 import os
@@ -15,6 +16,7 @@ from config import settings
 from services.opname_catalog import PV_ITEMS
 from services.opname_web import make_opname_token
 from services.opname_xlsx import parse_standard_opname_xlsx
+from tests.test_tagihan_generator import _build_synthetic_mc_template_bytes, _build_synthetic_vista_silo_bytes
 
 
 def _make_sample_pdf_bytes() -> bytes:
@@ -585,3 +587,77 @@ class OpnameWebTests(unittest.TestCase):
         excel_rows = mock_replace.call_args[0][3]
         self.assertEqual(len(excel_rows), 2)
         self.assertEqual([r[8] for r in excel_rows], ["II.1", "II.6"])
+
+        self.assertIn("Item ", html_resp.text)
+        self.assertIn("vendor_keyword", html_resp.text)
+
+    def test_web_tagihan_auth_guard_html_baseline_generate_and_download(self):
+        dash_tok = make_opname_token("DASHBOARD")
+        self.assertEqual(self.client.get("/api/opname/tagihan/status?token=wrong").status_code, 403)
+        self.assertEqual(self.client.post("/api/opname/tagihan/baseline?token=wrong", json={}).status_code, 403)
+        self.assertEqual(self.client.post("/api/opname/tagihan/generate?token=wrong", json={}).status_code, 403)
+        self.assertEqual(self.client.get("/api/opname/tagihan/download/1?token=wrong").status_code, 403)
+
+        opn_html = self.client.get(f"/opname?token={dash_tok}")
+        self.assertEqual(opn_html.status_code, 200)
+        for marker in ('id="tabTagihanBtn"', 'id="panelTagihan"', 'id="tgGenerateBtn"', 'id="tgBaseSubmitBtn"'):
+            self.assertIn(marker, opn_html.text)
+        for slop_marker in ("linear-gradient", "radial-gradient", "backdrop-filter", "\u2014", "outline: none"):
+            self.assertNotIn(slop_marker, opn_html.text)
+
+        base_mc9_bytes = _build_synthetic_mc_template_bytes()
+        silo_oct_bytes = _build_synthetic_vista_silo_bytes()
+        uploaded = []
+
+        def fake_upload(data_bytes, filename, folder_path, content_type="application/octet-stream"):
+            itm_id = f"WEBTAG_{len(uploaded) + 1}"
+            uploaded.append((itm_id, filename, folder_path, data_bytes))
+            return itm_id, f"https://1drv.ms/x/{itm_id}"
+
+        def fake_download(item_id, drive_id=""):
+            if item_id == "SILO_OCT_WEB":
+                return silo_oct_bytes
+            for u_id, _fn, _fld, data in uploaded:
+                if u_id == item_id:
+                    return data
+            raise KeyError(item_id)
+
+        with patch("main.ensure_monthly_opname_workbook", return_value=("DRV1", "SILO_OCT_WEB", "https://1drv.ms/x/silo_oct")), \
+             patch("main.download_file_from_onedrive", side_effect=fake_download), \
+             patch("main.upload_file_to_onedrive", side_effect=fake_upload):
+            base_resp = self.client.post(
+                f"/api/opname/tagihan/baseline?token={dash_tok}",
+                json={
+                    "cycle": "2026-09",
+                    "filename": "MC-9 MENCARI VOLUME 2026.xlsx",
+                    "file_b64": base64.b64encode(base_mc9_bytes).decode("ascii"),
+                },
+            )
+            self.assertEqual(base_resp.status_code, 200)
+            base_data = base_resp.json()
+            self.assertTrue(base_data["ok"])
+            self.assertEqual(base_data["baseline"]["cycle_key"], "2026-09")
+
+            st_resp = self.client.get(f"/api/opname/tagihan/status?token={dash_tok}&cycle=2026-10")
+            self.assertEqual(st_resp.status_code, 200)
+            st_data = st_resp.json()
+            self.assertEqual(st_data["cycle_key"], "2026-10")
+            self.assertEqual(st_data["prev_baseline"]["cycle_key"], "2026-09")
+
+            gen_resp = self.client.post(
+                f"/api/opname/tagihan/generate?token={dash_tok}",
+                json={"cycle": "2026-10"},
+            )
+            self.assertEqual(gen_resp.status_code, 200)
+            gen_data = gen_resp.json()
+            self.assertTrue(gen_data["ok"])
+            self.assertTrue(gen_data["rollover_applied"])
+            self.assertAlmostEqual(gen_data["total_grand"], 610500.0, places=2)
+            self.assertTrue(gen_data["download_url"].startswith("/api/opname/tagihan/download/"))
+
+            dl_resp = self.client.get(gen_data["download_url"])
+            self.assertEqual(dl_resp.status_code, 200)
+            wb_oct = openpyxl.load_workbook(io.BytesIO(dl_resp.content), data_only=True)
+            self.assertEqual(wb_oct["PML PV W1"]["K12"].value, 7)
+            self.assertEqual(wb_oct["PML PV W1"]["Q12"].value, 4)
+            wb_oct.close()

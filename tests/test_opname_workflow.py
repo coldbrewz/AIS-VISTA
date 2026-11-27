@@ -1030,6 +1030,173 @@ class OpnameWorkflowTests(unittest.TestCase):
         committed_keys = [r[8] for r in committed_rows]
         self.assertEqual(committed_keys, ["II.1", "II.6"])
 
+    @patch("main.upload_file_to_onedrive", return_value=("OD_ITM_ICHG", "https://1drv.ms/u/ARC_ICHG"))
+    @patch("main.replace_opname_slot_rows", return_value=(0, 1))
+    @patch("main.ensure_monthly_opname_workbook", return_value=("DRV1", "ITM_AGT", "https://1drv.ms/x/AGT"))
+    @patch("main.extract_opname_form_ocr")
+    @patch("main.send_whatsapp_document")
+    @patch("main.send_whatsapp_message")
+    def test_scan_opname_item_change_anchors_baseline_and_warns_on_unit_change(
+        self,
+        mock_send,
+        mock_send_doc,
+        mock_ocr,
+        mock_ensure,
+        mock_replace,
+        mock_upload_arc,
+    ):
+        base_xlsx = _make_sample_pv_xlsx(
+            {
+                "AGT": [
+                    {
+                        "tanggal": datetime.date(2026, 8, 14),
+                        "minggu": "M3",
+                        "kode_temuan": "140826PV009",
+                        "lokasi": "STA Ciujung Ramp Off",
+                        "jalur": "A",
+                        "lajur": "L1",
+                        "item": "Permanen",
+                        "p": 6.1,
+                        "l": 2.4,
+                        "t": 0.07,
+                        "vol_vendor": 1.025,
+                        "vol_opname": 1.025,
+                    }
+                ]
+            }
+        )
+        with patch("main._extract_image_bytes_from_message", return_value=base_xlsx):
+            main.process_message(
+                {
+                    "id": {"_serialized": "false_628111@c.us_BASE_ICHG"},
+                    "from": "628111@c.us",
+                    "hasMedia": True,
+                    "body": "Opname PV M3",
+                    "media": {
+                        "filename": "PV_W1_MIJ_2026.xlsx",
+                        "mimetype": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    },
+                    "_session": "default",
+                }
+            )
+
+        mock_send.reset_mock()
+        mock_ocr.return_value = (
+            {
+                "aset": "PV",
+                "vendor": "MIJ",
+                "wilayah": "W1",
+                "minggu": "M3",
+                "rows": [
+                    {
+                        "tanggal": "2026-08-14",
+                        "kode_temuan": "-",
+                        "wilayah": "W1",
+                        "vendor": "MIJ",
+                        "lokasi": "STA Cijantung Ramp Off",
+                        "raw_item": "Hotmix",
+                        "p": None,
+                        "l": None,
+                        "t": None,
+                        "jml": 2.5,
+                        "vol_vendor": 1.025,
+                        "vol_opname": 2.5,
+                        "item_edited": True,
+                        "handwritten_edited": True,
+                    }
+                ],
+            },
+            "",
+        )
+        pdf_bytes = _make_sample_pdf_bytes()
+        with patch("main._extract_image_bytes_from_message", return_value=pdf_bytes):
+            main.process_message(
+                {
+                    "id": {"_serialized": "false_628111@c.us_SCAN_ICHG"},
+                    "from": "628111@c.us",
+                    "hasMedia": True,
+                    "body": "Scan Opname PV M3",
+                    "media": {"filename": "opname_ichg.pdf", "mimetype": "application/pdf"},
+                    "_session": "default",
+                }
+            )
+
+        preview = mock_send.call_args[0][1]
+        self.assertIn("STA Ciujung Ramp Off", preview)
+        self.assertIn("item: Permanen→Hotmix", preview)
+        self.assertIn("m3) -> 'Hotmix' (Ton)", preview)
+        conn = sqlite3.connect(self.db_path)
+        payload_row = conn.execute("SELECT payload_json FROM opname_pending ORDER BY created_at DESC LIMIT 1").fetchone()
+        conn.close()
+        staged_ent = main.json.loads(payload_row[0])[0]["entries"][0]
+        self.assertEqual(staged_ent["lokasi"], "STA Ciujung Ramp Off")
+        self.assertEqual(staged_ent["vendor_item_key"], "II.1")
+        self.assertEqual(staged_ent["vendor_keyword"], "Permanen")
+        self.assertEqual(staged_ent["item_key"], "II.6")
+        self.assertTrue(staged_ent["item_edited"])
+        self.assertTrue(staged_ent["handwritten_edited"])
+
+    @patch("main.upload_file_to_onedrive", return_value=("OD_ITM_RK", "https://1drv.ms/u/ARC_RK"))
+    @patch("main.ensure_monthly_opname_workbook", return_value=("DRV1", "ITM_AGT", "https://1drv.ms/x/AGT"))
+    @patch("main.extract_opname_form_ocr")
+    @patch("main.send_whatsapp_document")
+    @patch("main.send_whatsapp_message")
+    def test_scan_opname_rekap_new_item_creates_flagged_added_row(
+        self,
+        mock_send,
+        mock_send_doc,
+        mock_ocr,
+        mock_ensure,
+        mock_upload_arc,
+    ):
+        mock_ocr.return_value = (
+            {
+                "aset": "PV",
+                "vendor": "MIJ",
+                "wilayah": "W1",
+                "minggu": "M3",
+                "rows": [
+                    {
+                        "tanggal": "2026-08-14",
+                        "lokasi": "KM 45+200",
+                        "raw_item": "Permanen",
+                        "vol_vendor": 1.0,
+                        "vol_opname": 1.0,
+                    }
+                ],
+                "rekap_revisi": [{"raw_item": "Sealant 1cm", "vol_revisi": 12.5}],
+            },
+            "",
+        )
+        pdf_bytes = _make_sample_pdf_bytes()
+        with patch("main._extract_image_bytes_from_message", return_value=pdf_bytes):
+            main.process_message(
+                {
+                    "id": {"_serialized": "false_628111@c.us_SCAN_RKNEW"},
+                    "from": "628111@c.us",
+                    "hasMedia": True,
+                    "body": "Scan Opname PV M3",
+                    "media": {"filename": "opname_rknew.pdf", "mimetype": "application/pdf"},
+                    "_session": "default",
+                }
+            )
+
+        preview = mock_send.call_args[0][1]
+        self.assertIn("Sealant 1cm", preview)
+        self.assertIn("(dari Rekap)", preview)
+        self.assertIn("lengkapi Tanggal & STA/KM", preview)
+        xlsx_bytes = mock_send_doc.call_args[0][1]
+        parsed_xlsx = parse_standard_opname_xlsx(xlsx_bytes, filename=mock_send_doc.call_args[0][2])
+        self.assertEqual(len(parsed_xlsx.slots[0].entries), 2)
+        conn = sqlite3.connect(self.db_path)
+        payload_row = conn.execute("SELECT payload_json FROM opname_pending ORDER BY created_at DESC LIMIT 1").fetchone()
+        conn.close()
+        staged_entries = main.json.loads(payload_row[0])[0]["entries"]
+        self.assertEqual(len(staged_entries), 2)
+        self.assertEqual(staged_entries[1]["row_action"], "ADDED")
+        self.assertEqual(staged_entries[1]["item_key"], "III.1")
+        self.assertAlmostEqual(staged_entries[1]["volume"], 12.5)
+
 
 if __name__ == "__main__":
     unittest.main()

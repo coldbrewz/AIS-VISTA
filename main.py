@@ -1314,9 +1314,9 @@ def handle_rekap_opname_command(reply_chat_id: str, text_lower: str, session: st
     send_whatsapp_message(reply_chat_id, "\n".join(lines), session)
 
 
-def _record_tagihan_archive(slot_id: str, cycle_key: str, source_type: str, arc_info: dict, sheet_count: int) -> None:
+def _record_tagihan_archive(slot_id: str, cycle_key: str, source_type: str, arc_info: dict, sheet_count: int) -> int:
     conn = sqlite3.connect(settings.DB_URL)
-    conn.execute(
+    cur = conn.execute(
         """
         INSERT INTO opname_archives (
             slot_id, cycle_key, aset, wilayah, vendor, minggu, source_type, file_path, item_id, web_url, row_count, created_at
@@ -1333,76 +1333,58 @@ def _record_tagihan_archive(slot_id: str, cycle_key: str, source_type: str, arc_
             datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
         ),
     )
+    row_id = int(cur.lastrowid or 0)
     conn.commit()
     conn.close()
+    return row_id
 
 
-def handle_tagihan_command(reply_chat_id: str, body_text: str, message: dict, session: str) -> None:
+def save_tagihan_baseline(cycle_m: int, cycle_y: int, tmpl_filename: str, tmpl_bytes: bytes) -> dict:
     if not settings.OPNAME_ENABLED:
-        send_whatsapp_message(reply_chat_id, "⚠️ Fitur opname/tagihan sedang dinonaktifkan.", session)
-        return
+        raise ValueError("Fitur opname/tagihan sedang dinonaktifkan.")
     if not settings.OPNAME_EXCEL_SHARE_LINK:
-        send_whatsapp_message(reply_chat_id, "❌ `OPNAME_EXCEL_SHARE_LINK` belum dikonfigurasi di server bot.", session)
-        return
+        raise ValueError("`OPNAME_EXCEL_SHARE_LINK` belum dikonfigurasi di server bot.")
+    if not tmpl_bytes:
+        raise ValueError("File template MC tidak boleh kosong.")
 
     xlsx_mime = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-    media_filename, media_mimetype = extract_media_metadata(message)
-    has_xlsx_attachment = bool(
-        message.get("hasMedia")
-        and (media_filename.lower().endswith(".xlsx") or "spreadsheetml" in media_mimetype)
-    )
-    is_base_cmd = bool(re.match(r"^/tagihan\s+base\b", body_text.strip(), re.IGNORECASE))
+    cycle_key = f"{cycle_y:04d}-{cycle_m:02d}"
+    month_label = OPNAME_MONTH_NAMES.get(cycle_m, f"{cycle_m:02d}")
+    next_m, next_y = (1, cycle_y + 1) if cycle_m == 12 else (cycle_m + 1, cycle_y)
+    safe_name = tmpl_filename or f"MC-{cycle_m:02d}.xlsx"
+    base_arc = _archive_opname_file_to_onedrive(cycle_key, "Tagihan", safe_name, tmpl_bytes, xlsx_mime)
+    archive_id = _record_tagihan_archive(f"TAGIHAN-{cycle_key}", cycle_key, "TAGIHAN_OUTPUT", base_arc, 0)
+    print(f"[Opname Tagihan] Saved baseline {cycle_key} | file={base_arc.get('filename', safe_name)}", flush=True)
+    return {
+        "cycle_key": cycle_key,
+        "month_label": month_label,
+        "next_cycle_key": f"{next_y:04d}-{next_m:02d}",
+        "archive_id": archive_id,
+        "filename": base_arc.get("filename", safe_name),
+        "web_url": base_arc.get("web_url", ""),
+        "item_id": base_arc.get("item_id", ""),
+    }
 
-    tmpl_bytes = b""
-    tmpl_filename = ""
-    if has_xlsx_attachment:
-        try:
-            tmpl_bytes = _extract_image_bytes_from_message(message)
-            tmpl_filename = media_filename or "MC_TEMPLATE.xlsx"
-        except Exception as dl_err:
-            send_whatsapp_message(reply_chat_id, f"❌ Gagal mengunduh file template MC: {dl_err}", session)
-            return
 
-    if is_base_cmd:
-        if not has_xlsx_attachment:
-            send_whatsapp_message(
-                reply_chat_id,
-                "⚠️ Lampirkan file `MC` terakhir (misal `MC-9 MENCARI VOLUME.xlsx`) bersama caption `/tagihan base 2026-09`.",
-                session,
-            )
-            return
-        base_m, base_y = parse_tagihan_cycle(
-            re.sub(r"^/tagihan\s+base\b", "/tagihan", body_text, flags=re.IGNORECASE),
-            template_filename=tmpl_filename,
-        )
-        base_key = f"{base_y:04d}-{base_m:02d}"
-        base_label = OPNAME_MONTH_NAMES.get(base_m, f"{base_m:02d}")
-        next_m, next_y = (1, base_y + 1) if base_m == 12 else (base_m + 1, base_y)
-        try:
-            base_arc = _archive_opname_file_to_onedrive(base_key, "Tagihan", tmpl_filename, tmpl_bytes, xlsx_mime)
-            _record_tagihan_archive(f"TAGIHAN-{base_key}", base_key, "TAGIHAN_OUTPUT", base_arc, 0)
-        except Exception as arch_err:
-            send_whatsapp_message(reply_chat_id, f"❌ Gagal menyimpan baseline Tagihan ke OneDrive: {arch_err}", session)
-            return
-        send_whatsapp_message(
-            reply_chat_id,
-            f"✅ *Baseline Tagihan `{base_label} {base_y}` Tersimpan*\n"
-            f"File: `{base_arc.get('filename', tmpl_filename)}`\n"
-            f"🔗 {base_arc.get('web_url', '')}\n\n"
-            f"Untuk membuat tagihan bulan berikutnya dengan auto-rollover `S.D. BULAN LALU`, ketik:\n"
-            f"`/tagihan {next_y:04d}-{next_m:02d}`",
-            session,
-        )
-        return
+def run_tagihan_generation(
+    cycle_m: int,
+    cycle_y: int,
+    tmpl_bytes: bytes = b"",
+    tmpl_filename: str = "",
+) -> dict:
+    if not settings.OPNAME_ENABLED:
+        raise ValueError("Fitur opname/tagihan sedang dinonaktifkan.")
+    if not settings.OPNAME_EXCEL_SHARE_LINK:
+        raise ValueError("`OPNAME_EXCEL_SHARE_LINK` belum dikonfigurasi di server bot.")
 
-    cycle_m, cycle_y = parse_tagihan_cycle(body_text, template_filename=tmpl_filename)
+    xlsx_mime = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
     cycle_key = f"{cycle_y:04d}-{cycle_m:02d}"
     month_label = OPNAME_MONTH_NAMES.get(cycle_m, f"{cycle_m:02d}")
     prev_m, prev_y = (12, cycle_y - 1) if cycle_m == 1 else (cycle_m - 1, cycle_y)
     prev_cycle_key = f"{prev_y:04d}-{prev_m:02d}"
     rollover_prev = False
 
-    if has_xlsx_attachment:
+    if tmpl_bytes:
         tmpl_m, tmpl_y = parse_tagihan_cycle("", template_filename=tmpl_filename, default_cycle=(cycle_m, cycle_y))
         if (tmpl_m, tmpl_y) == (prev_m, prev_y):
             rollover_prev = True
@@ -1472,52 +1454,41 @@ def handle_tagihan_command(reply_chat_id: str, body_text: str, message: dict, se
                 try:
                     tmpl_bytes, tmpl_filename = download_share_file_from_onedrive(settings.TAGIHAN_TEMPLATE_SHARE_LINK)
                 except Exception as share_err:
-                    send_whatsapp_message(reply_chat_id, f"❌ Gagal mengunduh `TAGIHAN_TEMPLATE_SHARE_LINK`: {share_err}", session)
-                    return
+                    raise RuntimeError(f"Gagal mengunduh `TAGIHAN_TEMPLATE_SHARE_LINK`: {share_err}") from share_err
 
             if not tmpl_bytes:
                 if latest_out_row and latest_out_row[0] and latest_out_row[0] < prev_cycle_key:
                     ly, lm = map(int, latest_out_row[0].split("-"))
                     nx_m, nx_y = (1, ly + 1) if lm == 12 else (lm + 1, ly)
-                    send_whatsapp_message(
-                        reply_chat_id,
+                    raise ValueError(
                         f"⚠️ Baseline Tagihan terakhir tersimpan pada `{latest_out_row[0]}` (`{prev_cycle_key}` belum ada).\n"
                         f"Jalankan `/tagihan {nx_y:04d}-{nx_m:02d}` secara berurutan agar `S.D. BULAN LALU` terakumulasi otomatis, "
-                        f"atau lampirkan file `MC-{cycle_m:02d}.xlsx` bersama caption `/tagihan {cycle_key}`.",
-                        session,
+                        f"atau lampirkan file `MC-{cycle_m:02d}.xlsx` bersama caption `/tagihan {cycle_key}`."
                     )
-                    return
-                send_whatsapp_message(
-                    reply_chat_id,
+                raise ValueError(
                     "⚠️ Template `MC` belum tersedia.\n"
                     "Kirim file `MC` terakhir dengan caption `/tagihan base <YYYY-MM>` (untuk rollover otomatis bulan-bulan berikutnya), "
-                    "atau kirim template bulan ini bersama caption `/tagihan`.",
-                    session,
+                    "atau kirim template bulan ini bersama caption `/tagihan`."
                 )
-                return
 
-    # Download DATA_UNTUK_VOL_<BULAN>_<TAHUN>.xlsx from OneDrive
     try:
         if settings.OPNAME_AUTO_MONTHLY:
             try:
-                target_di, drv_id, itm_id = _resolve_cycle_target_di(cycle_m, cycle_y)
+                _di, drv_id, itm_id = _resolve_cycle_target_di(cycle_m, cycle_y)
                 vista_bytes = download_file_from_onedrive(itm_id, drive_id=drv_id)
             except Exception:
                 conn_wb = sqlite3.connect(settings.DB_URL)
                 conn_wb.execute("DELETE FROM opname_workbooks WHERE cycle_key = ?", (cycle_key,))
                 conn_wb.commit()
                 conn_wb.close()
-                target_di, drv_id, itm_id = _resolve_cycle_target_di(cycle_m, cycle_y)
+                _di, drv_id, itm_id = _resolve_cycle_target_di(cycle_m, cycle_y)
                 vista_bytes = download_file_from_onedrive(itm_id, drive_id=drv_id)
         else:
             vista_bytes, _ = download_share_file_from_onedrive(settings.OPNAME_EXCEL_SHARE_LINK)
     except Exception as silo_err:
-        send_whatsapp_message(
-            reply_chat_id,
-            f"❌ Gagal mengambil `DATA_UNTUK_VOL_{month_label}_{cycle_y}.xlsx` dari OneDrive: {silo_err}",
-            session,
-        )
-        return
+        raise RuntimeError(
+            f"Gagal mengambil `DATA_UNTUK_VOL_{month_label}_{cycle_y}.xlsx` dari OneDrive: {silo_err}"
+        ) from silo_err
 
     try:
         res = generate_tagihan_workbook(
@@ -1528,16 +1499,102 @@ def handle_tagihan_command(reply_chat_id: str, body_text: str, message: dict, se
             rollover_previous_month=rollover_prev,
         )
     except Exception as gen_err:
-        send_whatsapp_message(reply_chat_id, f"❌ Gagal membuat file Tagihan MC ({cycle_key}): {gen_err}", session)
-        return
+        raise ValueError(f"Gagal membuat file Tagihan MC ({cycle_key}): {gen_err}") from gen_err
 
     out_bytes = res["output_bytes"]
     out_filename = res["output_filename"]
     try:
         out_arc = _archive_opname_file_to_onedrive(cycle_key, "Tagihan", out_filename, out_bytes, xlsx_mime)
-        _record_tagihan_archive(f"TAGIHAN-{cycle_key}", cycle_key, "TAGIHAN_OUTPUT", out_arc, len(res["ordered_sheets"]))
+        archive_id = _record_tagihan_archive(
+            f"TAGIHAN-{cycle_key}", cycle_key, "TAGIHAN_OUTPUT", out_arc, len(res["ordered_sheets"])
+        )
     except Exception as arch_err:
-        send_whatsapp_message(reply_chat_id, f"❌ Gagal mengunggah hasil Tagihan ke OneDrive: {arch_err}", session)
+        raise RuntimeError(f"Gagal mengunggah hasil Tagihan ke OneDrive: {arch_err}") from arch_err
+
+    print(
+        f"[Opname Tagihan] Generated {cycle_key} | file={out_filename} | total=Rp {res['total_grand']:,.2f} | rollover={bool(res.get('rollover_applied'))}",
+        flush=True,
+    )
+    return {
+        "cycle_key": cycle_key,
+        "prev_cycle_key": prev_cycle_key,
+        "month_label": month_label,
+        "output_filename": out_filename,
+        "output_bytes": out_bytes,
+        "web_url": out_arc.get("web_url", ""),
+        "item_id": out_arc.get("item_id", ""),
+        "archive_id": archive_id,
+        "rollover_applied": bool(res.get("rollover_applied")),
+        "ordered_sheets": list(res["ordered_sheets"]),
+        "grand_totals": dict(res["grand_totals"]),
+        "total_grand": float(res["total_grand"]),
+        "warnings": list(res["warnings"]),
+    }
+
+
+def handle_tagihan_command(reply_chat_id: str, body_text: str, message: dict, session: str) -> None:
+    if not settings.OPNAME_ENABLED:
+        send_whatsapp_message(reply_chat_id, "⚠️ Fitur opname/tagihan sedang dinonaktifkan.", session)
+        return
+    if not settings.OPNAME_EXCEL_SHARE_LINK:
+        send_whatsapp_message(reply_chat_id, "❌ `OPNAME_EXCEL_SHARE_LINK` belum dikonfigurasi di server bot.", session)
+        return
+
+    xlsx_mime = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+    media_filename, media_mimetype = extract_media_metadata(message)
+    has_xlsx_attachment = bool(
+        message.get("hasMedia")
+        and (media_filename.lower().endswith(".xlsx") or "spreadsheetml" in media_mimetype)
+    )
+    is_base_cmd = bool(re.match(r"^/tagihan\s+base\b", body_text.strip(), re.IGNORECASE))
+
+    tmpl_bytes = b""
+    tmpl_filename = ""
+    if has_xlsx_attachment:
+        try:
+            tmpl_bytes = _extract_image_bytes_from_message(message)
+            tmpl_filename = media_filename or "MC_TEMPLATE.xlsx"
+        except Exception as dl_err:
+            send_whatsapp_message(reply_chat_id, f"❌ Gagal mengunduh file template MC: {dl_err}", session)
+            return
+
+    if is_base_cmd:
+        if not has_xlsx_attachment:
+            send_whatsapp_message(
+                reply_chat_id,
+                "⚠️ Lampirkan file `MC` terakhir (misal `MC-9 MENCARI VOLUME.xlsx`) bersama caption `/tagihan base 2026-09`.",
+                session,
+            )
+            return
+        base_m, base_y = parse_tagihan_cycle(
+            re.sub(r"^/tagihan\s+base\b", "/tagihan", body_text, flags=re.IGNORECASE),
+            template_filename=tmpl_filename,
+        )
+        try:
+            base_res = save_tagihan_baseline(base_m, base_y, tmpl_filename, tmpl_bytes)
+        except Exception as arch_err:
+            send_whatsapp_message(reply_chat_id, f"❌ Gagal menyimpan baseline Tagihan ke OneDrive: {arch_err}", session)
+            return
+        send_whatsapp_message(
+            reply_chat_id,
+            f"✅ *Baseline Tagihan `{base_res['month_label']} {base_y}` Tersimpan*\n"
+            f"File: `{base_res['filename']}`\n"
+            f"🔗 {base_res['web_url']}\n\n"
+            f"Untuk membuat tagihan bulan berikutnya dengan auto-rollover `S.D. BULAN LALU`, ketik:\n"
+            f"`/tagihan {base_res['next_cycle_key']}`",
+            session,
+        )
+        return
+
+    cycle_m, cycle_y = parse_tagihan_cycle(body_text, template_filename=tmpl_filename)
+    try:
+        res = run_tagihan_generation(cycle_m, cycle_y, tmpl_bytes=tmpl_bytes, tmpl_filename=tmpl_filename)
+    except ValueError as val_err:
+        msg = str(val_err)
+        send_whatsapp_message(reply_chat_id, msg if msg.startswith(("⚠️", "❌")) else f"❌ {msg}", session)
+        return
+    except RuntimeError as run_err:
+        send_whatsapp_message(reply_chat_id, f"❌ {run_err}", session)
         return
 
     gt_lines = "\n".join(
@@ -1545,20 +1602,20 @@ def handle_tagihan_command(reply_chat_id: str, body_text: str, message: dict, se
         for s in res["ordered_sheets"]
         if res["grand_totals"].get(s, 0.0) > 0
     ) or "• Belum ada volume opname > 0 pada siklus ini."
-    roll_note = f"\n🔄 Rollover `S.D. BULAN LALU`: dari `{prev_cycle_key}`" if res.get("rollover_applied") else ""
+    roll_note = f"\n🔄 Rollover `S.D. BULAN LALU`: dari `{res['prev_cycle_key']}`" if res.get("rollover_applied") else ""
     warn_block = ""
     if res["warnings"]:
         warn_block = "\n\n⚠️ *Catatan:*\n" + "\n".join(f"- {w}" for w in res["warnings"][:5])
     caption = (
-        f"📑 *Tagihan MC Selesai (`{month_label} {cycle_y}`)*{roll_note}\n"
+        f"📑 *Tagihan MC Selesai (`{res['month_label']} {cycle_y}`)*{roll_note}\n"
         f"Total Pilar 1 (sheet aktif): *Rp {res['total_grand']:,.2f}*\n\n"
         f"{gt_lines}{warn_block}\n\n"
-        f"🔗 {out_arc.get('web_url', '')}"
+        f"🔗 {res.get('web_url', '')}"
     )
     send_whatsapp_document(
         reply_chat_id,
-        out_bytes,
-        out_filename,
+        res["output_bytes"],
+        res["output_filename"],
         caption=caption,
         mimetype=xlsx_mime,
         session=session,
@@ -1735,6 +1792,33 @@ def _match_ocr_row_to_baseline(
     for i, b in candidates:
         if b.get("tanggal") == t_str and b.get("item_key") == item_key:
             return i, b
+
+    # Pass 5: item-change fallback (Permanen -> Salob, etc.) using Kode Temuan, Vol. Vendor, or >=2 dims
+    if k_up and k_up != "-":
+        for i, b in candidates:
+            if str(b.get("kode_temuan") or "").strip().upper() == k_up:
+                return i, b
+    if vol_vnd is not None:
+        for i, b in candidates:
+            if b.get("tanggal") == t_str:
+                bv = _b_vol(b)
+                if bv is not None and abs(bv - vol_vnd) <= 0.015:
+                    return i, b
+    for i, b in candidates:
+        if b.get("tanggal") == t_str:
+            b_dims = (
+                to_float_num(b.get("p")),
+                to_float_num(b.get("l")),
+                to_float_num(b.get("t")),
+                to_float_num(b.get("jml")),
+            )
+            hits = sum(
+                1
+                for ov, bv in zip(ocr_dims, b_dims)
+                if ov is not None and bv is not None and abs(ov - bv) <= 0.01
+            )
+            if hits >= 2:
+                return i, b
     return None
 
 
@@ -1888,11 +1972,14 @@ def process_opname_scan_message(
         j_val = to_float_num(r_obj.get("jml"))
         vol_opn = to_float_num(r_obj.get("vol_opname"))
         vol_vnd = to_float_num(r_obj.get("vol_vendor"))
+        item_edited = bool(r_obj.get("item_edited"))
 
         vendor_p: float | None = None
         vendor_l: float | None = None
         vendor_t: float | None = None
         vendor_jml: float | None = None
+        vendor_item_key = ""
+        vendor_keyword = ""
         anchored_from_excel = False
         base_match = (
             _match_ocr_row_to_baseline(
@@ -1934,6 +2021,21 @@ def process_opname_scan_message(
             vendor_l = to_float_num(base.get("l"))
             vendor_t = to_float_num(base.get("t"))
             vendor_jml = to_float_num(base.get("jml"))
+            base_ik = str(base.get("item_key") or "").strip()
+            base_kw = str(base.get("keyword") or base_ik).strip()
+            base_sat = str(base.get("satuan") or "").strip()
+            if base_ik and base_ik != boq_item.item_key:
+                vendor_item_key = base_ik
+                vendor_keyword = base_kw or base_ik
+                item_edited = True
+                if base_sat and base_sat.lower() != boq_item.satuan.lower():
+                    unit_msg = (
+                        f"Baris {i_r}: Item berubah '{vendor_keyword}' ({base_sat}) -> '{boq_item.keyword}' "
+                        f"({boq_item.satuan}); periksa kembali volume di web review."
+                    )
+                    if unit_msg not in warn_seen:
+                        warn_seen.add(unit_msg)
+                        warnings.append(unit_msg)
             anchored_from_excel = True
         else:
             loc, typo_fix = fuzzy_fix_ic_akses_typo(loc)
@@ -1978,7 +2080,7 @@ def process_opname_scan_message(
             continue
 
         dim_edited = bool(r_obj.get("dimension_edited"))
-        hw_edited = bool(r_obj.get("handwritten_edited"))
+        hw_edited = bool(r_obj.get("handwritten_edited")) or item_edited
 
         if row_action == "REMOVED":
             vol_num = 0.0
@@ -2033,6 +2135,7 @@ def process_opname_scan_message(
                 warnings.append(r_warn)
 
             vol_changed_from_vendor = (vol_vnd is None) or (abs(vol_num - vol_vnd) > 0.001)
+            item_mark = f" (item: {vendor_keyword}→{boq_item.keyword})" if vendor_keyword else ""
             if row_action == "ADDED":
                 is_edited = True
                 hw_edited = True
@@ -2043,7 +2146,7 @@ def process_opname_scan_message(
                 if auto_recalc_dim and vol_changed_from_vendor:
                     is_jml_only = p_val is None and l_val is None and t_val is None
                     edited_mark = " ✏️ (auto)" if is_jml_only else " ✏️ (auto P×L×T)"
-                elif is_edited and vol_opn is None and not vol_changed_from_vendor:
+                elif is_edited and not item_edited and vol_opn is None and not vol_changed_from_vendor:
                     edited_mark = " ⚠️✏️ (cek revisi di web)"
                     u_msg = (
                         f"Baris {i_r}: Coretan terdeteksi pada '{boq_item.keyword}' ({loc or wil}), "
@@ -2057,7 +2160,7 @@ def process_opname_scan_message(
                 else:
                     edited_mark = ""
                 preview_lines.append(
-                    f"{i_r}. *{boq_item.keyword}* (`{boq_item.item_key}`) | {loc or wil} | *{vol_num:g} {boq_item.satuan}*{edited_mark}"
+                    f"{i_r}. *{boq_item.keyword}* (`{boq_item.item_key}`) | {loc or wil} | *{vol_num:g} {boq_item.satuan}*{edited_mark}{item_mark}"
                 )
 
         parsed_entries.append(
@@ -2083,6 +2186,9 @@ def process_opname_scan_message(
                 "vendor_l": vendor_l,
                 "vendor_t": vendor_t,
                 "vendor_jml": vendor_jml,
+                "vendor_item_key": vendor_item_key,
+                "vendor_keyword": vendor_keyword,
+                "item_edited": bool(item_edited),
                 "volume": round(vol_num, 4),
                 "handwritten_edited": bool(is_edited),
                 "row_action": row_action,
@@ -2136,24 +2242,85 @@ def process_opname_scan_message(
                 active_by_ik[pe["item_key"]] = active_by_ik.get(pe["item_key"], 0.0) + float(pe["volume"] or 0.0)
         first_loc_c = next((pe.get("lokasi", "") for pe in parsed_entries if pe.get("lokasi")), "")
         first_wil_c = first_slot["wilayah"]
+        rekap_dt = max(str(pe.get("tanggal") or fallback_dt) for pe in parsed_entries)
         for rr in rekap_rev_rows:
             if not isinstance(rr, dict):
                 continue
             rev_val = to_float_num(rr.get("vol_revisi"))
             if rev_val is None or rev_val <= 0:
                 continue
-            rb_item, _ = resolve_boq_item(aset, str(rr.get("raw_item") or ""), lokasi=first_loc_c, wilayah=first_wil_c)
+            raw_rk_item = str(rr.get("raw_item") or "").strip()
+            rb_item, rb_err = resolve_boq_item(aset, raw_rk_item, lokasi=first_loc_c, wilayah=first_wil_c)
             if not rb_item:
-                continue
-            calc_sum = round(active_by_ik.get(rb_item.item_key, 0.0), 3)
-            if abs(calc_sum - rev_val) > 0.02:
-                rc_msg = (
-                    f"Rekap '{rb_item.keyword}': total baris aktif ({calc_sum:g} {rb_item.satuan}) "
-                    f"berbeda dengan tulisan tangan Vol. Revisi ({rev_val:g} {rb_item.satuan})."
+                unres_msg = (
+                    f"Item '{raw_rk_item or '-'}' pada REKAP VOLUME PER ITEM ({rev_val:g}) belum lengkap "
+                    f"({rb_err or 'butuh STA/KM'}) - tambahkan manual via '+ Tambah Baris' di web review."
                 )
-                if rc_msg not in warn_seen:
-                    warn_seen.add(rc_msg)
-                    warnings.append(rc_msg)
+                if unres_msg not in warn_seen:
+                    warn_seen.add(unres_msg)
+                    warnings.append(unres_msg)
+                continue
+            if rb_item.item_key not in active_by_ik:
+                new_ent = {
+                    "tanggal": rekap_dt,
+                    "minggu": first_slot["minggu"],
+                    "kode_temuan": "-",
+                    "wilayah": first_slot["wilayah"],
+                    "vendor": first_slot["vendor"],
+                    "lokasi": "-",
+                    "jalur_lajur": "-",
+                    "item": rb_item,
+                    "item_key": rb_item.item_key,
+                    "keyword": rb_item.keyword,
+                    "uraian": rb_item.uraian,
+                    "satuan": rb_item.satuan,
+                    "p": None,
+                    "l": None,
+                    "t": None,
+                    "jml": None,
+                    "vol_vendor": None,
+                    "vendor_p": None,
+                    "vendor_l": None,
+                    "vendor_t": None,
+                    "vendor_jml": None,
+                    "vendor_item_key": "",
+                    "vendor_keyword": "",
+                    "item_edited": False,
+                    "volume": round(rev_val, 4),
+                    "handwritten_edited": True,
+                    "row_action": "ADDED",
+                    "anchored_from_excel": False,
+                    "material_status": "",
+                    "keterangan": "Tambahan dari REKAP VOLUME PER ITEM (lengkapi STA/KM)",
+                }
+                parsed_entries.append(new_ent)
+                dt_r = datetime.datetime.strptime(rekap_dt, "%Y-%m-%d").date()
+                cm_r, cy_r = resolve_billing_cycle(dt_r)
+                sid_r = f"XLS-{cy_r % 100:02d}{cm_r:02d}-{aset}-{first_slot['wilayah']}-{first_slot['vendor']}-{first_slot['minggu']}"
+                target_slot_r = slots_by_id.get(sid_r, first_slot)
+                target_slot_r["entries"].append({k: v for k, v in new_ent.items() if k != "item"})
+                active_by_ik[rb_item.item_key] = round(rev_val, 4)
+                preview_lines.append(
+                    f"{len(preview_lines) + 1}. ➕ *{rb_item.keyword}* (`{rb_item.item_key}`) | (dari Rekap) | "
+                    f"*{rev_val:g} {rb_item.satuan}* (lengkapi STA/KM)"
+                )
+                add_rk_msg = (
+                    f"Tambahan dari REKAP VOLUME PER ITEM: '{rb_item.keyword}' ({rev_val:g} {rb_item.satuan}) "
+                    f"dibuat sebagai baris tambahan - lengkapi Tanggal & STA/KM di web review."
+                )
+                if add_rk_msg not in warn_seen:
+                    warn_seen.add(add_rk_msg)
+                    warnings.append(add_rk_msg)
+            else:
+                calc_sum = round(active_by_ik.get(rb_item.item_key, 0.0), 3)
+                if abs(calc_sum - rev_val) > 0.02:
+                    rc_msg = (
+                        f"Rekap '{rb_item.keyword}': total baris aktif ({calc_sum:g} {rb_item.satuan}) "
+                        f"berbeda dengan tulisan tangan Vol. Revisi ({rev_val:g} {rb_item.satuan})."
+                    )
+                    if rc_msg not in warn_seen:
+                        warn_seen.add(rc_msg)
+                        warnings.append(rc_msg)
 
     scan_id = f"SCAN-{datetime.datetime.now():%y%m%d}-{uuid.uuid4().hex[:4].upper()}"
     print(f"[Opname Scan] Validated {len(parsed_entries)} row(s) into {len(slots_by_id)} slot(s) | staging {scan_id}...")
@@ -2810,6 +2977,8 @@ app.include_router(
             "render_pdf_pages": lambda *a, **kw: _render_pdf_pages_to_jpeg(*a, **kw),
             "send_whatsapp": lambda *a, **kw: send_whatsapp_message(*a, **kw),
             "format_commit_reply": lambda *a, **kw: _format_commit_reply(*a, **kw),
+            "save_tagihan_baseline": lambda *a, **kw: save_tagihan_baseline(*a, **kw),
+            "run_tagihan_generation": lambda *a, **kw: run_tagihan_generation(*a, **kw),
             "get_db_url": lambda: settings.DB_URL,
         }
     )

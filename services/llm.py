@@ -429,15 +429,16 @@ def extract_opname_form_ocr(
         f"3. CRITICAL: When a printed number in `P`, `L`, `T`, or `Jml` is scribbled/crossed out (often right-aligned) and a handwritten pen number is written next to it (often on the left), extract ONLY the uncrossed handwritten number into `p`, `l`, `t`, or `jml`, and set `dimension_edited: true` and `handwritten_edited: true`.\n"
         f"   Convert Indonesian comma decimals to dots (e.g. `5,4` -> `5.4`, `1,2` -> `1.2`, `2,9` -> `2.9`). NEVER back-calculate `P`, `L`, `T`, or `Jml` from `Vol. Vendor`.\n"
         f"4. CRITICAL: Leave `vol_opname` as `null` when the `Vol. Opname` column is blank on paper (do NOT copy `vol_vendor` and do NOT mentally multiply dimensions into `vol_opname`). If a handwritten number is explicitly written in `Vol. Opname` (or crossed out in `Vol. Vendor` and replaced), extract both `vol_vendor` and handwritten `vol_opname`, and set `handwritten_edited: true`.\n"
-        f"5. ROW ADDITIONS & REMOVALS (`row_action`):\n"
+        f"5. ROW ADDITIONS, REMOVALS & ITEM CHANGES (`row_action`, `item_edited`):\n"
         f'   - Normal row: `"row_action": ""`.\n'
         f'   - If an ENTIRE printed row is crossed out horizontally across the row OR marked `0`, `BATAL`, or `HAPUS` in `Vol. Opname` / `Keterangan`, STILL extract its printed `row_no`, `tanggal`, `lokasi`, `raw_item`, and `vol_vendor`, and set `"row_action": "REMOVED"`, `"handwritten_edited": true`, `"vol_opname": 0`.\n'
         f'   - If a fully handwritten row is written inside `TAMBAHAN LAPANGAN` rows (`+1..+3`) or in the page margin, extract all handwritten fields and set `"row_action": "ADDED"`, `"handwritten_edited": true`.\n'
+        f'   - If printed `KODE` or `Item / Keyword RAB` is crossed out and a replacement item or short `KODE` (e.g. `Salob`, `II.2`, `I.15 PVC`) is written beside it or in `Keterangan` (`Ganti: ...` / `-> <KODE>`), extract ONLY the handwritten replacement into `raw_item`, and set `"item_edited": true` and `"handwritten_edited": true`.\n'
         f"6. Map `raw_item` strictly using the closest exact keyword or item_key from the BOQ menu below when available.\n"
-        f'7. IGNORE printed summary rows inside `REKAP VOLUME PER ITEM`, EXCEPT when handwritten totals appear in its `Vol. Revisi` column: put them into top-level `"rekap_revisi": [{{"raw_item": "", "vol_revisi": 0.0}}]`, otherwise `"rekap_revisi": []`. If a page ONLY contains printed summary rows or signatures with no `Vol. Revisi`, return `{{"rows": [], "rekap_revisi": []}}`.\n'
+        f'7. IGNORE printed summary rows inside `REKAP VOLUME PER ITEM`, EXCEPT when handwritten numbers appear in `Vol. Revisi` OR a newly handwritten item + volume is written in empty `REKAP VOLUME PER ITEM` rows: put them into top-level `"rekap_revisi": [{{"raw_item": "", "vol_revisi": 0.0}}]`, otherwise `"rekap_revisi": []`. If a page ONLY contains printed summary rows or signatures with no handwritten `REKAP` entries, return `{{"rows": [], "rekap_revisi": []}}`.\n'
         f"8. Return valid JSON ONLY (no markdown fences, no commentary):\n"
         f'{{"aset": "", "vendor": "", "wilayah": "", "minggu": "", "rows": ['
-        f'{{"row_no": "", "tanggal": "YYYY-MM-DD", "kode_temuan": "", "wilayah": "", "vendor": "", "lokasi": "", "jalur": "", "lajur": "", "raw_item": "", "p": null, "l": null, "t": null, "jml": null, "vol_vendor": null, "vol_opname": null, "keterangan": "", "dimension_edited": false, "handwritten_edited": false, "row_action": ""}}'
+        f'{{"row_no": "", "tanggal": "YYYY-MM-DD", "kode_temuan": "", "wilayah": "", "vendor": "", "lokasi": "", "jalur": "", "lajur": "", "raw_item": "", "p": null, "l": null, "t": null, "jml": null, "vol_vendor": null, "vol_opname": null, "keterangan": "", "dimension_edited": false, "item_edited": false, "handwritten_edited": false, "row_action": ""}}'
         f'], "rekap_revisi": []}}\n\n'
         f"OFFICIAL BOQ MENU:\n{boq_menu_text}"
     )
