@@ -210,6 +210,44 @@ return exactly:
         return None, f"LLM Error: {str(e)}"
 
 
+def _read_chat_completion_content(resp: requests.Response) -> str:
+    """Read message text from either an SSE stream or a standard JSON chat completion."""
+    hdrs = {str(k).lower(): str(v) for k, v in (getattr(resp, "headers", None) or {}).items()}
+    ctype = hdrs.get("content-type", "").lower()
+    if "text/event-stream" in ctype:
+        parts: list[str] = []
+        for raw_line in resp.iter_lines(decode_unicode=True):
+            line = raw_line.decode("utf-8", errors="ignore") if isinstance(raw_line, bytes) else (raw_line or "")
+            line = line.strip()
+            if not line or not line.startswith("data:"):
+                continue
+            payload_str = line[5:].strip()
+            if payload_str == "[DONE]":
+                break
+            try:
+                chunk = json.loads(payload_str)
+            except json.JSONDecodeError:
+                continue
+            if not isinstance(chunk, dict):
+                continue
+            choices = chunk.get("choices") or []
+            if not choices or not isinstance(choices, list) or not isinstance(choices[0], dict):
+                continue
+            delta = choices[0].get("delta") or choices[0].get("message") or {}
+            piece = delta.get("content") if isinstance(delta, dict) else ""
+            if piece:
+                parts.append(str(piece))
+        return "".join(parts)
+
+    data_json = resp.json()
+    if not isinstance(data_json, dict):
+        return ""
+    choices = data_json.get("choices") or []
+    if not choices or not isinstance(choices, list) or not isinstance(choices[0], dict):
+        return ""
+    return str(choices[0].get("message", {}).get("content", "") or "")
+
+
 def extract_opname_form_ocr(
     page_images: list[bytes],
     aset_hint: str,
@@ -217,8 +255,8 @@ def extract_opname_form_ocr(
     boq_menu_text: str,
 ) -> tuple[dict, str]:
     """
-    High-resolution Vision OCR for standardized A4 opname forms (photo or PDF pages).
-    Prioritizes handwritten edits in `Vol. Opname` over printed `Vol. Vendor`, grounded strictly on `boq_menu_text`.
+    Per-page streaming Vision OCR for standardized A4 opname forms (photo or PDF pages).
+    Prioritizes handwritten edits in `Vol. Opname` and revised dimensions, grounded strictly on `boq_menu_text`.
     Returns: ({"aset": ..., "vendor": ..., "wilayah": ..., "minggu": ..., "rows": [...]}, error_str)
     """
     if not page_images:
@@ -232,7 +270,8 @@ def extract_opname_form_ocr(
         f"Context hint from user: Aset='{aset_hint or 'auto'}', Caption='{caption or '-'}'.\n\n"
         f"Instructions:\n"
         f"1. Read header fields if visible: aset (PV/GR/SG/WR/RM/LC/CA/DR/FE), wilayah (W1/W2) and vendor from top header box or rows, minggu (M1/M2/M3/M4/M5).\n"
-        f"2. Read every non-empty row from the opname table. IGNORE completely empty blank rows. If Tanggal, Minggu, Kode Temuan, or STA/Jalur/Lajur are left blank on subsequent rows at the same location ('ditto'), carry forward the values from the row above.\n"
+        f"2. Read every non-empty row from the main opname table. IGNORE completely empty blank rows, and IGNORE the bottom `REKAP VOLUME PER ITEM` summary table and signature block. If a page ONLY contains summary rows or signatures, return `{{\"rows\": []}}`.\n"
+        f"   If Tanggal, Minggu, Kode Temuan, or STA/Jalur/Lajur are left blank on subsequent rows at the same location ('ditto'), carry forward the values from the row above.\n"
         f"3. CRITICAL: If any printed dimension (`P`, `L`, `T`, or `Jml`) is crossed out and replaced by a handwritten number, put the REVISED handwritten number in `p`, `l`, `t`, or `jml`, and set `dimension_edited: true` and `handwritten_edited: true`.\n"
         f"4. CRITICAL: Leave `vol_opname` as `null` when the `Vol. Opname` column is blank on paper (do NOT copy `vol_vendor` and do NOT mentally multiply dimensions into `vol_opname`). If a handwritten number is explicitly written in `Vol. Opname` (or crossed out in `Vol. Vendor` and replaced), extract both `vol_vendor` and handwritten `vol_opname`, and set `handwritten_edited: true`.\n"
         f"5. Map `raw_item` strictly using the closest exact keyword or item_key from the BOQ menu below when available.\n"
@@ -243,40 +282,95 @@ def extract_opname_form_ocr(
         f"OFFICIAL BOQ MENU:\n{boq_menu_text}"
     )
 
-    content_parts: list[dict] = [{"type": "text", "text": prompt}]
-    for img_bytes in page_images[:5]:
-        b64_page = prepare_image_for_llm(img_bytes, max_size=2048, quality=88)
-        content_parts.append(
-            {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{b64_page}"}}
-        )
-
     headers = {
         "Content-Type": "application/json",
         "Authorization": f"Bearer {settings.VIKEY_API_KEY}",
     }
-    body = {
-        "model": model_name,
-        "messages": [{"role": "user", "content": content_parts}],
-        "temperature": 0.0,
-    }
 
-    for attempt in range(3):
-        try:
-            resp = requests.post(settings.VIKEY_BASE_URL, headers=headers, json=body, timeout=90)
-            if resp.status_code in [429, 500, 502, 503, 504] and attempt < 2:
-                time.sleep(3)
-                continue
-            if resp.status_code != 200:
-                return {}, f"OCR LLM API Error ({resp.status_code}): {resp.text}"
-            data_json = resp.json()
-            raw_content = data_json.get("choices", [{}])[0].get("message", {}).get("content", "")
-            if not raw_content:
+    pages = page_images[:5]
+    total_pages = len(pages)
+    merged: dict = {"aset": "", "vendor": "", "wilayah": "", "minggu": "", "rows": []}
+    last_err = ""
+
+    for p_idx, img_bytes in enumerate(pages, start=1):
+        b64_page = prepare_image_for_llm(img_bytes, max_size=1600, quality=82)
+        img_kb = max(1, (len(b64_page) * 3) // (4 * 1024))
+        body = {
+            "model": model_name,
+            "messages": [
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": prompt},
+                        {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{b64_page}"}},
+                    ],
+                }
+            ],
+            "temperature": 0.0,
+            "stream": True,
+        }
+
+        page_ok = False
+        for attempt in range(2):
+            t0 = time.monotonic()
+            try:
+                with requests.post(
+                    settings.VIKEY_BASE_URL,
+                    headers=headers,
+                    json=body,
+                    timeout=(15, 90),
+                    stream=True,
+                ) as resp:
+                    if resp.status_code in [429, 500, 502, 503, 504] and attempt == 0:
+                        print(f"[Opname OCR] Page {p_idx}/{total_pages} | model={model_name} | HTTP {resp.status_code} retrying...")
+                        time.sleep(2)
+                        continue
+                    if resp.status_code != 200:
+                        last_err = f"OCR LLM API Error ({resp.status_code}): {resp.text}"
+                        print(f"[Opname OCR] Page {p_idx}/{total_pages} HTTP error: {last_err}")
+                        break
+                    raw_content = _read_chat_completion_content(resp)
+                elapsed = time.monotonic() - t0
+                if not raw_content:
+                    last_err = f"Page {p_idx}: empty OCR response"
+                    if attempt == 0:
+                        time.sleep(2)
+                        continue
+                    break
+                parsed = json.loads(extract_json_str(raw_content))
+                if not isinstance(parsed, dict):
+                    raise ValueError("OCR JSON root is not an object")
+                page_rows = parsed.get("rows") or []
+                if not isinstance(page_rows, list):
+                    page_rows = []
+                print(
+                    f"[Opname OCR] Page {p_idx}/{total_pages} | model={model_name} | img={img_kb}KB | "
+                    f"{elapsed:.1f}s | rows={len(page_rows)}"
+                )
+                for key in ("aset", "vendor", "wilayah", "minggu"):
+                    if not merged[key] and parsed.get(key):
+                        merged[key] = str(parsed.get(key)).strip()
+                merged["rows"].extend(r for r in page_rows if isinstance(r, dict))
+                page_ok = True
                 break
-            parsed = json.loads(extract_json_str(raw_content))
-            return parsed if isinstance(parsed, dict) else {}, ""
-        except Exception as e:
-            if attempt == 2:
-                return {}, f"OCR LLM Error: {e}"
-            time.sleep(2)
+            except Exception as e:
+                elapsed = time.monotonic() - t0
+                last_err = f"OCR LLM Error: {e}"
+                print(
+                    f"[Opname OCR] Page {p_idx}/{total_pages} failed in {elapsed:.1f}s "
+                    f"(attempt {attempt + 1}/2): {e}"
+                )
+                if attempt == 0:
+                    time.sleep(2)
 
+        if not page_ok and merged["rows"]:
+            print(
+                f"[Opname OCR] Warning: Page {p_idx} failed ({last_err}); "
+                f"returning {len(merged['rows'])} row(s) from earlier pages."
+            )
+
+    if merged["rows"]:
+        return merged, ""
+    if last_err:
+        return {}, last_err
     return {}, "Failed to extract table rows from opname scan."

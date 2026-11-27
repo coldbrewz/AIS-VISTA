@@ -1,5 +1,40 @@
+import io
+import json
 import unittest
-from services.llm import extract_json_str
+from unittest.mock import patch
+
+from PIL import Image
+
+from config import settings
+from services.llm import extract_json_str, extract_opname_form_ocr
+
+
+def _tiny_jpeg_bytes() -> bytes:
+    buf = io.BytesIO()
+    Image.new("RGB", (64, 64), "white").save(buf, format="JPEG")
+    return buf.getvalue()
+
+
+class _FakeResponse:
+    def __init__(self, status_code=200, headers=None, lines=None, json_data=None, text=""):
+        self.status_code = status_code
+        self.headers = headers or {}
+        self._lines = lines or []
+        self._json_data = json_data
+        self.text = text
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        return False
+
+    def iter_lines(self, decode_unicode=True):
+        for ln in self._lines:
+            yield ln
+
+    def json(self):
+        return self._json_data
 
 
 class LLMJsonExtractTests(unittest.TestCase):
@@ -35,6 +70,91 @@ Kode is 240523PV001.
 {"kode": "240523PV001", "sheet_name": "PV"}
 Hope this helps!"""
         self.assertEqual(extract_json_str(text), '{"kode": "240523PV001", "sheet_name": "PV"}')
+
+
+class OpnameOCRStreamTests(unittest.TestCase):
+    def setUp(self):
+        self.orig_key = settings.VIKEY_API_KEY
+        settings.VIKEY_API_KEY = "test-vikey-key"
+
+    def tearDown(self):
+        settings.VIKEY_API_KEY = self.orig_key
+
+    @patch("services.llm.requests.post")
+    def test_opname_ocr_parses_sse_stream_and_merges_multipage(self, mock_post):
+        p1_payload = json.dumps(
+            {
+                "aset": "PV",
+                "vendor": "MIJ",
+                "wilayah": "W1",
+                "minggu": "M5",
+                "rows": [
+                    {
+                        "tanggal": "2026-08-23",
+                        "raw_item": "Permanen",
+                        "p": 4.3,
+                        "l": 1.8,
+                        "t": 0.16,
+                        "vol_vendor": 1.238,
+                        "vol_opname": None,
+                    }
+                ],
+            }
+        )
+        mid = len(p1_payload) // 2
+        sse_p1 = [
+            f"data: {json.dumps({'choices': [{'delta': {'content': p1_payload[:mid]}}]})}",
+            "",
+            f"data: {json.dumps({'choices': [{'delta': {'content': p1_payload[mid:]}}]})}",
+            "data: [DONE]",
+        ]
+        p2_payload = json.dumps({"rows": []})
+        sse_p2 = [
+            f"data: {json.dumps({'choices': [{'delta': {'content': p2_payload}}]})}",
+            "data: [DONE]",
+        ]
+        mock_post.side_effect = [
+            _FakeResponse(headers={"Content-Type": "text/event-stream; charset=utf-8"}, lines=sse_p1),
+            _FakeResponse(headers={"Content-Type": "text/event-stream"}, lines=sse_p2),
+        ]
+
+        res, err = extract_opname_form_ocr([_tiny_jpeg_bytes(), _tiny_jpeg_bytes()], "PV", "Scan Opname PV M5", "II.1 Permanen")
+        self.assertEqual(err, "")
+        self.assertEqual(mock_post.call_count, 2)
+        for call in mock_post.call_args_list:
+            self.assertTrue(call.kwargs.get("stream"))
+        self.assertEqual(res["aset"], "PV")
+        self.assertEqual(res["vendor"], "MIJ")
+        self.assertEqual(res["minggu"], "M5")
+        self.assertEqual(len(res["rows"]), 1)
+        self.assertEqual(res["rows"][0]["raw_item"], "Permanen")
+
+    @patch("services.llm.requests.post")
+    def test_opname_ocr_handles_plain_json_fallback(self, mock_post):
+        mock_post.return_value = _FakeResponse(
+            headers={"Content-Type": "application/json"},
+            json_data={
+                "choices": [
+                    {
+                        "message": {
+                            "content": json.dumps(
+                                {
+                                    "aset": "PV",
+                                    "vendor": "MIJ",
+                                    "wilayah": "W1",
+                                    "minggu": "M5",
+                                    "rows": [{"tanggal": "2026-08-23", "raw_item": "Hotmix", "vol_vendor": 5.07}],
+                                }
+                            )
+                        }
+                    }
+                ]
+            },
+        )
+        res, err = extract_opname_form_ocr([_tiny_jpeg_bytes()], "PV", "Scan Opname PV", "II.6 Hotmix")
+        self.assertEqual(err, "")
+        self.assertEqual(len(res["rows"]), 1)
+        self.assertEqual(res["rows"][0]["vol_vendor"], 5.07)
 
 
 if __name__ == "__main__":
